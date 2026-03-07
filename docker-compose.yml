@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    container_name: modal-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env.example
+    depends_on:
+      - redis
+      - postgres
+
+  worker:
+    build: ./backend
+    container_name: modal-worker
+    command: celery -A celery_app.celery worker --loglevel=info
+    depends_on:
+      - redis
+
+  frontend:
+    build: ./frontend
+    container_name: modal-frontend
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./frontend/.env.example
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:7
+    container_name: modal-redis
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16
+    container_name: modal-postgres
+    environment:
+      POSTGRES_DB: modal
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: modal-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  postgres_data:
