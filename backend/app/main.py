@@ -1,15 +1,23 @@
 import json
+import logging
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from app.api import auth, lesson, story
+from app.api import analytics, auth, lesson, story
+from app.core.errors import AIIntegrationError, ExternalServiceError, MediaGenerationError
+from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.core.config import settings
 from app.db.models import Base
 from app.db.session import engine
 
+configure_logging()
+logger = logging.getLogger("api.main")
+
 app = FastAPI(title=settings.app_name)
 
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,16 +29,29 @@ app.add_middleware(
 app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(story.router, prefix=settings.api_prefix)
 app.include_router(lesson.router, prefix=settings.api_prefix)
+app.include_router(analytics.router, prefix=settings.api_prefix)
+
+
+@app.exception_handler(AIIntegrationError)
+async def ai_error_handler(_: Request, exc: AIIntegrationError):
+    return JSONResponse(status_code=502, content={"status": "error", "message": str(exc)})
+
+
+@app.exception_handler(MediaGenerationError)
+async def media_error_handler(_: Request, exc: MediaGenerationError):
+    return JSONResponse(status_code=502, content={"status": "error", "message": str(exc)})
+
+
+@app.exception_handler(ExternalServiceError)
+async def external_service_error_handler(_: Request, exc: ExternalServiceError):
+    return JSONResponse(status_code=503, content={"status": "error", "message": str(exc)})
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    except Exception:
-        # Allow API startup without DB during local scaffolding.
-        return
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("startup_complete")
 
 
 @app.get("/health")

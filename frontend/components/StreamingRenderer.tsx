@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { AIImageRenderer } from "@/components/media/AIImageRenderer";
 import { NarrationPlayer } from "@/components/media/NarrationPlayer";
+import { VideoPlayer } from "@/components/media/VideoPlayer";
 import { QuizPanel } from "@/components/interaction/QuizPanel";
 import { useLearningStore } from "@/store/learningStore";
 import type { QuizPayload } from "@/types/stream";
@@ -23,6 +24,7 @@ export function StreamingRenderer({ onQuizSubmit }: { onQuizSubmit?: (answer: st
           const data = toData(item.payload?.data);
           const imageUrl = typeof data.signed_url === "string" ? data.signed_url : typeof data.url === "string" ? data.url : null;
           const audioUrl = typeof data.signed_url === "string" ? data.signed_url : typeof data.url === "string" ? data.url : null;
+          const videoUrl = typeof data.signed_url === "string" ? data.signed_url : typeof data.url === "string" ? data.url : null;
 
           return (
             <motion.article
@@ -42,6 +44,7 @@ export function StreamingRenderer({ onQuizSubmit }: { onQuizSubmit?: (answer: st
               {item.type === "image" && imageUrl && <AIImageRenderer src={imageUrl} alt="AI generated visual" />}
 
               {item.type === "audio" && audioUrl && <NarrationPlayer src={audioUrl} />}
+              {item.type === "video" && videoUrl && <VideoPlayer src={videoUrl} />}
 
               {item.type === "quiz" && (
                 <QuizPanel

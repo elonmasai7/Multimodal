@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from app.deps.auth import AuthUser, get_current_user
+from app.deps.auth import AuthUser, get_current_user, get_token_from_request, verify_token
 from app.models.schemas import ChoiceRequest, CreateSessionRequest
 from app.services.ai_orchestrator import new_session_id, stream_multimodal_events
 from app.services.firestore_repo import FirestoreRepository
@@ -39,10 +39,16 @@ async def create_story(req: CreateSessionRequest, user: AuthUser = Depends(get_c
 
 @router.get("/stream/{session_id}")
 async def story_stream(
+    request: Request,
     session_id: str,
     prompt: str | None = None,
-    user: AuthUser = Depends(get_current_user),
+    token: str | None = None,
 ) -> StreamingResponse:
+    resolved_token = token or get_token_from_request(request)
+    if not resolved_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+    user = verify_token(resolved_token)
+
     session = await firestore_repo.get_story_session(session_id=session_id)
     if session is None or session.get("user_id") != user.uid:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Story session not found")
@@ -62,7 +68,9 @@ async def submit_choice(req: ChoiceRequest, user: AuthUser = Depends(get_current
     if session is None or session.get("user_id") != user.uid:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Story session not found")
 
-    next_scene = "scene_02"
+    state = await redis_state.get_story_state(session_id=req.session_id)
+    history_len = len((state or {}).get("history", []))
+    next_scene = f"scene_{history_len + 2:02d}"
     await redis_state.append_story_choice(
         session_id=req.session_id,
         scene_id=req.scene_id,

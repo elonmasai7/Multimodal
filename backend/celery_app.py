@@ -1,5 +1,7 @@
 from celery import Celery
 
+from app.services.ai_orchestrator import engine
+
 celery = Celery(
     "modal_worker",
     broker="redis://redis:6379/0",
@@ -11,13 +13,15 @@ celery.conf.update(task_serializer="json", result_serializer="json", accept_cont
 
 @celery.task(name="tasks.generate_media")
 def generate_media(payload: dict) -> dict:
+    prompt = str(payload.get("prompt", ""))
+    session_type = str(payload.get("session_type", "lesson"))
+    plan = engine.generate_lesson_plan(prompt=prompt, session_type=session_type)
+    image = engine.generate_image(str(plan.get("image_prompt", prompt)))
+    audio = engine.synthesize_audio(str(plan.get("narration", prompt)))
+
     return {
-        "status": "queued_complete",
-        "outputs": {
-            "text": "Generated lesson narrative",
-            "image": "gs://bucket/generated-diagram.png",
-            "video": "gs://bucket/generated-video.mp4",
-            "audio": "gs://bucket/generated-audio.mp3",
-        },
-        "payload": payload,
+      "status": "ok",
+      "plan": plan,
+      "image": image,
+      "audio": audio,
     }

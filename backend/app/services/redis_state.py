@@ -44,3 +44,20 @@ class RedisStateManager:
     async def quiz_attempt_count(self, *, lesson_id: str) -> int:
         key = f"lesson:{lesson_id}:quiz"
         return int(await self.redis.llen(key))
+
+    async def set_quiz_key(self, *, lesson_id: str, question_id: str, correct: str) -> None:
+        key = f"lesson:{lesson_id}:quiz-keys"
+        await self.redis.hset(key, mapping={question_id: correct})
+        await self.redis.expire(key, 86400)
+
+    async def get_quiz_key(self, *, lesson_id: str, question_id: str) -> str | None:
+        key = f"lesson:{lesson_id}:quiz-keys"
+        value = await self.redis.hget(key, question_id)
+        return str(value) if value is not None else None
+
+    async def get_ai_cache(self, *, key: str) -> dict | None:
+        data = await self.redis.get(f"ai-cache:{key}")
+        return json.loads(data) if data else None
+
+    async def set_ai_cache(self, *, key: str, payload: dict, ttl_seconds: int = 3600) -> None:
+        await self.redis.set(f"ai-cache:{key}", json.dumps(payload), ex=ttl_seconds)

@@ -1,11 +1,17 @@
 import asyncio
+import hashlib
 import json
+import logging
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 
+import httpx
+
 from app.core.config import settings
+from app.core.errors import AIIntegrationError, MediaGenerationError
 from app.services.gcs_media import GCSMediaService
+from app.services.redis_state import RedisStateManager
 
 try:
     import vertexai
@@ -20,6 +26,8 @@ try:
     from google.cloud import texttospeech
 except Exception:
     texttospeech = None
+
+logger = logging.getLogger("ai.orchestrator")
 
 
 def new_session_id() -> str:
@@ -48,41 +56,71 @@ class VertexMultimodalEngine:
     def _init_clients(self) -> None:
         if self._ready:
             return
+
         if not settings.gcp_project_id:
-            raise RuntimeError("GCP_PROJECT_ID is required for non-mock AI mode")
+            raise AIIntegrationError("GCP_PROJECT_ID is required")
+        if not settings.gcs_media_bucket:
+            raise MediaGenerationError("GCS_MEDIA_BUCKET is required")
+        if not settings.videofx_endpoint:
+            raise MediaGenerationError("VIDEOFX_ENDPOINT is required")
         if vertexai is None or GenerativeModel is None or ImageGenerationModel is None:
-            raise RuntimeError("Vertex AI SDK not installed correctly")
+            raise AIIntegrationError("Vertex AI SDK not installed correctly")
 
         vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
         self.text_model = GenerativeModel(settings.vertex_model_text)
         self.image_model = ImageGenerationModel.from_pretrained(settings.vertex_model_image)
         self.tts_client = texttospeech.TextToSpeechClient() if texttospeech else None
-        self.gcs = GCSMediaService() if settings.gcs_media_bucket else None
+        self.gcs = GCSMediaService()
         self._ready = True
 
-    def generate_text(self, prompt: str, session_type: str) -> str:
+    def generate_lesson_plan(self, prompt: str, session_type: str) -> dict:
         self._init_clients()
-        response = self.text_model.generate_content(
-            f"Create a concise {session_type} explanation for: {prompt}. Include clear pedagogy and one quiz question."
+        instruction = (
+            "Return strict JSON only with keys: title, narration, sections, image_prompt, video_prompt, quiz. "
+            "quiz must include id, question, options (array), correct. "
+            f"Build a {session_type} learning experience for prompt: {prompt}"
         )
-        return getattr(response, "text", "") or "Generated educational explanation."
+        response = self.text_model.generate_content(instruction)
+        text = getattr(response, "text", "")
+        if not text:
+            raise AIIntegrationError("Gemini returned empty content")
 
-    def generate_image_reference(self, prompt: str) -> dict:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("Gemini JSON parse failed; applying fallback extractor")
+            return {
+                "title": f"{session_type.title()} Session",
+                "narration": text,
+                "sections": ["Introduction", "Visual concept", "Practice", "Quiz"],
+                "image_prompt": f"Educational diagram about {prompt}",
+                "video_prompt": f"Short explanation video about {prompt}",
+                "quiz": {
+                    "id": "q1",
+                    "question": "Which choice best summarizes the concept?",
+                    "options": ["A", "B", "C", "D"],
+                    "correct": "B",
+                },
+            }
+
+    def generate_image(self, image_prompt: str) -> dict:
         self._init_clients()
-        images = self.image_model.generate_images(prompt=f"Educational diagram for: {prompt}", number_of_images=1)
+        images = self.image_model.generate_images(prompt=image_prompt, number_of_images=1)
         image = images[0]
         filename = f"/tmp/{uuid.uuid4()}.png"
         image.save(location=filename)
-        payload: dict[str, str] = {"local_path": filename, "caption": "Generated with Imagen"}
-        if self.gcs:
-            uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
-            payload.update({"gcs_uri": uploaded.gcs_uri, "signed_url": uploaded.signed_url})
-        return payload
 
-    def synthesize_audio(self, text: str) -> dict | None:
+        uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
+        return {
+            "gcs_uri": uploaded.gcs_uri,
+            "signed_url": uploaded.signed_url,
+            "caption": image_prompt,
+        }
+
+    def synthesize_audio(self, text: str) -> dict:
         self._init_clients()
         if not self.tts_client:
-            return None
+            raise MediaGenerationError("Google Text-to-Speech client unavailable")
 
         synthesis_input = texttospeech.SynthesisInput(text=text[:5000])
         voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
@@ -91,65 +129,104 @@ class VertexMultimodalEngine:
         filename = f"/tmp/{uuid.uuid4()}.mp3"
         with open(filename, "wb") as f:
             f.write(response.audio_content)
-        payload: dict[str, str] = {"local_path": filename}
-        if self.gcs:
-            uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="audio", content_type="audio/mpeg")
-            payload.update({"gcs_uri": uploaded.gcs_uri, "signed_url": uploaded.signed_url})
-        return payload
+
+        uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="audio", content_type="audio/mpeg")
+        return {
+            "gcs_uri": uploaded.gcs_uri,
+            "signed_url": uploaded.signed_url,
+        }
+
+    async def generate_video(self, *, video_prompt: str) -> dict:
+        self._init_clients()
+        headers = {"Content-Type": "application/json"}
+        if settings.videofx_api_key:
+            headers["Authorization"] = f"Bearer {settings.videofx_api_key}"
+
+        payload = {"prompt": video_prompt, "duration_seconds": 8}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(str(settings.videofx_endpoint), headers=headers, json=payload)
+        if response.status_code >= 400:
+            raise MediaGenerationError(f"VideoFX request failed: {response.status_code}")
+
+        data = response.json()
+        if "url" not in data and "signed_url" not in data:
+            raise MediaGenerationError("VideoFX response missing url/signed_url")
+        return data
 
 
 engine = VertexMultimodalEngine()
+redis_state = RedisStateManager()
+
+
+def _cache_key(prompt: str, session_type: str) -> str:
+    return hashlib.sha256(f"{session_type}:{prompt}".encode()).hexdigest()
 
 
 async def stream_multimodal_events(prompt: str, session_type: str) -> AsyncGenerator[str, None]:
-    if settings.mock_ai:
-        script = [
-            ("narration", f"Starting {session_type}: {prompt}"),
-            ("text", "Learning objective: understand core concepts with examples."),
-            ("image", {"url": "https://placehold.co/1024x768/png", "caption": "Generated diagram"}),
-            ("video", {"url": "https://example.com/video.mp4", "duration": 8}),
-            (
-                "quiz",
-                {
-                    "id": "q1",
-                    "question": "What is the key idea from this section?",
-                    "options": ["A", "B", "C", "D"],
-                    "correct": "B",
-                },
-            ),
-        ]
-
-        for event, data in script:
-            yield _sse(event, session_type, data)
-            await asyncio.sleep(1)
-        yield _sse("done", session_type, {"status": "completed"})
+    key = _cache_key(prompt, session_type)
+    cached = await redis_state.get_ai_cache(key=key)
+    if cached:
+        yield _sse("status", session_type, {"message": "Loaded cached generation"})
+        for event_name in ["text", "image", "video", "audio", "quiz"]:
+            if event_name in cached:
+                yield _sse(event_name, session_type, cached[event_name])
+        yield _sse("done", session_type, {"status": "completed", "cached": True})
         return
 
+    start = datetime.now(UTC)
     try:
-        yield _sse("status", session_type, {"message": "Generating lesson text with Gemini"})
-        text = await asyncio.to_thread(engine.generate_text, prompt, session_type)
-        yield _sse("text", session_type, {"content": text})
+        yield _sse("status", session_type, {"message": "Generating structured lesson plan with Gemini"})
+        plan = await asyncio.to_thread(engine.generate_lesson_plan, prompt, session_type)
 
-        yield _sse("status", session_type, {"message": "Generating educational diagram with Imagen"})
-        image_payload = await asyncio.to_thread(engine.generate_image_reference, prompt)
+        narration = str(plan.get("narration", ""))
+        title = str(plan.get("title", f"{session_type.title()} Session"))
+        for chunk in [title, *[s.strip() for s in narration.split(".") if s.strip()]]:
+            yield _sse("narration", session_type, {"content": chunk})
+            await asyncio.sleep(0.05)
+
+        text_payload = {
+            "title": title,
+            "content": narration,
+            "sections": plan.get("sections", []),
+        }
+        yield _sse("text", session_type, text_payload)
+
+        yield _sse("status", session_type, {"message": "Generating image with Imagen"})
+        image_payload = await asyncio.to_thread(engine.generate_image, str(plan.get("image_prompt", prompt)))
         yield _sse("image", session_type, image_payload)
 
-        yield _sse("status", session_type, {"message": "Synthesizing narration audio"})
-        audio_payload = await asyncio.to_thread(engine.synthesize_audio, text)
-        if audio_payload:
-            yield _sse("audio", session_type, audio_payload)
+        yield _sse("status", session_type, {"message": "Generating video with VideoFX"})
+        video_payload = await engine.generate_video(video_prompt=str(plan.get("video_prompt", prompt)))
+        yield _sse("video", session_type, video_payload)
 
-        yield _sse(
-            "quiz",
-            session_type,
-            {
-                "id": "q1",
-                "question": "What best summarizes this lesson?",
-                "options": ["A", "B", "C", "D"],
-                "correct": "B",
+        yield _sse("status", session_type, {"message": "Generating narration audio"})
+        audio_payload = await asyncio.to_thread(engine.synthesize_audio, narration)
+        yield _sse("audio", session_type, audio_payload)
+
+        quiz_payload = plan.get("quiz", {
+            "id": "q1",
+            "question": "Select the best summary",
+            "options": ["A", "B", "C", "D"],
+            "correct": "B",
+        })
+        yield _sse("quiz", session_type, quiz_payload)
+
+        await redis_state.set_ai_cache(
+            key=key,
+            payload={
+                "text": text_payload,
+                "image": image_payload,
+                "video": video_payload,
+                "audio": audio_payload,
+                "quiz": quiz_payload,
             },
+            ttl_seconds=3600,
         )
-        yield _sse("done", session_type, {"status": "completed"})
+
+        elapsed_ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
+        logger.info("generation_complete session_type=%s elapsed_ms=%s", session_type, elapsed_ms)
+        yield _sse("done", session_type, {"status": "completed", "elapsed_ms": elapsed_ms})
     except Exception as exc:
+        logger.exception("generation_failed session_type=%s", session_type)
         yield _sse("error", session_type, {"message": str(exc)})
         yield _sse("done", session_type, {"status": "failed"})

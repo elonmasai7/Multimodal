@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { AuthPanel } from "@/components/forms/AuthPanel";
 import { useLearningStore } from "@/store/learningStore";
 
 const navLinks = [
@@ -18,7 +19,7 @@ export function Navbar() {
 
   return (
     <header className="sticky top-0 z-40 mb-6 rounded-2xl border border-white/15 bg-slate-950/70 p-3 backdrop-blur-xl">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-200">Modal Learning World</div>
         <nav className="flex flex-wrap items-center gap-2">
           {navLinks.map((item) => (
@@ -38,6 +39,9 @@ export function Navbar() {
             Audio: {audioEnabled ? "On" : "Off"}
           </button>
         </nav>
+        <div className="w-full md:w-72">
+          <AuthPanel />
+        </div>
       </div>
     </header>
   );
