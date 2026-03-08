@@ -1,26 +1,38 @@
 "use client";
 
 import { useState } from "react";
-import { createSession } from "@/lib/api";
+
+import { LearningStats } from "@/components/analytics/LearningStats";
+import { ProgressChart } from "@/components/analytics/ProgressChart";
+import { EngagementHeatmap } from "@/components/analytics/EngagementHeatmap";
+import { Navbar } from "@/components/layout/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
+import { SearchBar } from "@/components/forms/SearchBar";
+import { FileUploader } from "@/components/forms/FileUploader";
+
+const stats = [
+  { label: "Lessons completed", value: "42" },
+  { label: "Story chapters", value: "19" },
+  { label: "Quiz accuracy", value: "88%" },
+  { label: "Current streak", value: "12 days" }
+];
 
 export default function DashboardPage() {
-  const [prompt, setPrompt] = useState("Explain the solar system for middle school");
-  const [result, setResult] = useState<string>("");
-
-  const run = async (sessionType: "story" | "lesson") => {
-    const res = await createSession(prompt, sessionType);
-    setResult(JSON.stringify(res, null, 2));
-  };
+  const [query, setQuery] = useState("");
 
   return (
-    <main className="space-y-4">
-      <h1 className="text-3xl font-bold">Student Dashboard</h1>
-      <textarea className="w-full rounded border p-3" rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-      <div className="space-x-2">
-        <button onClick={() => run("story")} className="rounded bg-slate-800 px-4 py-2 text-white">Create Story</button>
-        <button onClick={() => run("lesson")} className="rounded bg-sky-600 px-4 py-2 text-white">Create Lesson</button>
-      </div>
-      <pre className="rounded bg-white p-3 text-xs">{result || "API response will appear here."}</pre>
-    </main>
+    <PageContainer className="pb-24">
+      <Navbar />
+      <section className="space-y-4 rounded-3xl border border-white/15 bg-white/5 p-6">
+        <h1 className="text-4xl font-bold">Student Mission Control</h1>
+        <SearchBar value={query} onChange={setQuery} />
+        <LearningStats stats={stats} />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ProgressChart />
+          <EngagementHeatmap />
+        </div>
+        <FileUploader />
+      </section>
+    </PageContainer>
   );
 }

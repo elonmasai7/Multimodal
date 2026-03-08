@@ -1,0 +1,44 @@
+"use client";
+
+import Link from "next/link";
+
+import { useLearningStore } from "@/store/learningStore";
+
+const navLinks = [
+  { href: "/", label: "World" },
+  { href: "/story", label: "Story" },
+  { href: "/lesson", label: "Lesson" },
+  { href: "/dashboard", label: "Student" },
+  { href: "/teacher", label: "Teacher" }
+];
+
+export function Navbar() {
+  const audioEnabled = useLearningStore((s) => s.audioEnabled);
+  const setAudioEnabled = useLearningStore((s) => s.setAudioEnabled);
+
+  return (
+    <header className="sticky top-0 z-40 mb-6 rounded-2xl border border-white/15 bg-slate-950/70 p-3 backdrop-blur-xl">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-200">Modal Learning World</div>
+        <nav className="flex flex-wrap items-center gap-2">
+          {navLinks.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="rounded-xl border border-transparent px-3 py-1.5 text-sm text-slate-200 transition hover:border-cyan-300/50 hover:bg-cyan-400/10"
+            >
+              {item.label}
+            </Link>
+          ))}
+          <button
+            onClick={() => setAudioEnabled(!audioEnabled)}
+            className="rounded-xl border border-cyan-200/40 px-3 py-1.5 text-sm text-cyan-100"
+            aria-label="Toggle audio"
+          >
+            Audio: {audioEnabled ? "On" : "Off"}
+          </button>
+        </nav>
+      </div>
+    </header>
+  );
+}

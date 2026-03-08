@@ -3,11 +3,70 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
+  --color-bg: #080d18;
+  --color-surface: #101b2d;
+  --color-primary: #4cc9f0;
+  --color-accent: #ffd166;
+  --color-success: #22c55e;
+  --color-warning: #f97316;
+  --color-text: #e5eefc;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 40px 90px rgba(18, 48, 89, 0.45);
 }
 
+[data-theme="story"] {
+  --color-bg: #1d102e;
+  --color-surface: #2f1b4a;
+  --color-primary: #ff8f3f;
+  --color-accent: #ffd166;
+}
+
+[data-theme="lesson"] {
+  --color-bg: #071a2b;
+  --color-surface: #12324f;
+  --color-primary: #4cc9f0;
+  --color-accent: #80ed99;
+}
+
+[data-theme="quiz"] {
+  --color-bg: #111827;
+  --color-surface: #1f2937;
+  --color-primary: #22d3ee;
+  --color-accent: #f59e0b;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: dark;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html,
 body {
-  background: radial-gradient(circle at top right, #e0f2fe, #f8fafc 45%, #eef2ff 100%);
-  color: #0f172a;
-  min-height: 100vh;
+  min-height: 100%;
+  background: radial-gradient(circle at top, rgba(76, 201, 240, 0.2), transparent 45%),
+    radial-gradient(circle at 90% 10%, rgba(255, 143, 63, 0.2), transparent 35%),
+    radial-gradient(circle at 10% 80%, rgba(167, 139, 250, 0.2), transparent 30%), var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body), "Segoe UI", sans-serif;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-display), "Segoe UI", sans-serif;
 }

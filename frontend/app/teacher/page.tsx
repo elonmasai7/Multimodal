@@ -1,21 +1,30 @@
-const mockStats = [
-  { metric: "Lesson completion", value: "78%" },
-  { metric: "Average score", value: "84" },
-  { metric: "Hardest topic", value: "Cellular respiration" }
+import { EngagementHeatmap } from "@/components/analytics/EngagementHeatmap";
+import { LearningStats } from "@/components/analytics/LearningStats";
+import { ProgressChart } from "@/components/analytics/ProgressChart";
+import { Notification } from "@/components/feedback/Notification";
+import { Navbar } from "@/components/layout/Navbar";
+import { PageContainer } from "@/components/layout/PageContainer";
+
+const teacherStats = [
+  { label: "Class completion", value: "78%" },
+  { label: "Weekly activity", value: "+14%" },
+  { label: "Avg score", value: "84" },
+  { label: "Needs review", value: "Cell respiration" }
 ];
 
 export default function TeacherPage() {
   return (
-    <main className="space-y-4">
-      <h1 className="text-3xl font-bold">Teacher Dashboard</h1>
-      <div className="grid gap-3 md:grid-cols-3">
-        {mockStats.map((item) => (
-          <article key={item.metric} className="rounded border border-slate-200 bg-white p-4">
-            <h2 className="text-sm text-slate-500">{item.metric}</h2>
-            <p className="text-2xl font-bold">{item.value}</p>
-          </article>
-        ))}
-      </div>
-    </main>
+    <PageContainer className="pb-24">
+      <Navbar />
+      <section className="space-y-5 rounded-3xl border border-white/15 bg-white/5 p-6">
+        <h1 className="text-4xl font-bold">Teacher Analytics Hub</h1>
+        <LearningStats stats={teacherStats} />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ProgressChart />
+          <EngagementHeatmap />
+        </div>
+        <Notification title="Adaptive Path Triggered" detail="17 students auto-assigned a photosynthesis reinforcement quest." />
+      </section>
+    </PageContainer>
   );
 }
