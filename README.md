@@ -54,6 +54,25 @@ Set these in backend `.env`:
 - `POSTGRES_URL`
 - `REDIS_URL`
 
+## Deployment Readiness Check
+Before startup, run:
+
+```bash
+./scripts/deployment-readiness.sh
+```
+
+The checker validates:
+- required env vars
+- Redis and Postgres connectivity
+- Firestore connectivity
+- GCS bucket reachability and IAM permissions
+- signed URL capability (`roles/iam.serviceAccountTokenCreator`)
+- Vertex Gemini and Imagen access
+- VideoFX endpoint reachability
+- Firebase Admin and Firebase Web API accessibility
+
+Docker Compose backend/worker now run this readiness check automatically before service startup.
+
 ## Cloud SQL Migrations
 ```bash
 psql "$DATABASE_URL" -f backend/migrations/001_init.sql
