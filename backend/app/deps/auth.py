@@ -8,6 +8,7 @@ from firebase_admin import credentials
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.core.demo_auth import build_demo_user_payload, is_demo_token
 
 security = HTTPBearer(auto_error=False)
 
@@ -31,6 +32,9 @@ def _init_firebase() -> None:
 
 
 def verify_token(id_token: str) -> AuthUser:
+    if is_demo_token(id_token):
+        return AuthUser(**build_demo_user_payload())
+
     try:
         _init_firebase()
         decoded = firebase_auth.verify_id_token(id_token)
@@ -44,7 +48,7 @@ def verify_token(id_token: str) -> AuthUser:
             claims=decoded,
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Firebase token") from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired authentication token") from exc
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> AuthUser:

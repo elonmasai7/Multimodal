@@ -84,6 +84,11 @@ psql "$DATABASE_URL" -f backend/migrations/002_quiz_attempts.sql
 docker compose up --build
 ```
 
+## Demo Login
+- Default local demo credentials: `demo@modal.local` / `demo12345`
+- Override with backend env vars `DEMO_AUTH_EMAIL`, `DEMO_AUTH_PASSWORD`, `DEMO_AUTH_TOKEN`, and frontend env vars `NEXT_PUBLIC_DEMO_LOGIN_EMAIL`, `NEXT_PUBLIC_DEMO_LOGIN_PASSWORD`
+- Demo auth is intended for local/dev use when Firebase is unavailable or you want a predictable login
+
 ## Notes
 - SSE streaming endpoints accept Firebase bearer token in `Authorization` or query param `token` (for native `EventSource`).
 - Generated image/audio assets are uploaded to GCS and returned as signed URLs.

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { login, signup } from "@/lib/api";
+import { DEMO_LOGIN_EMAIL, DEMO_LOGIN_PASSWORD, login, signup } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 
 export function AuthPanel() {
@@ -12,13 +12,16 @@ export function AuthPanel() {
   const clearSession = useAuthStore((s) => s.clearSession);
 
   const [mode, setMode] = useState<"login" | "signup">("login");
-  const [formEmail, setFormEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [formEmail, setFormEmail] = useState(DEMO_LOGIN_EMAIL);
+  const [password, setPassword] = useState(DEMO_LOGIN_PASSWORD);
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
+    if (submitting) return;
     setError(null);
+    setSubmitting(true);
     try {
       const auth = mode === "login" ? await login(formEmail, password) : await signup(formEmail, password, displayName);
       setSession({
@@ -28,8 +31,19 @@ export function AuthPanel() {
         email: auth.email
       });
     } catch (err) {
+      clearSession();
       setError(err instanceof Error ? err.message : "Authentication failed");
+    } finally {
+      setSubmitting(false);
     }
+  }
+
+  function useDemoCredentials() {
+    setMode("login");
+    setFormEmail(DEMO_LOGIN_EMAIL);
+    setPassword(DEMO_LOGIN_PASSWORD);
+    setDisplayName("");
+    setError(null);
   }
 
   if (token) {
@@ -48,6 +62,12 @@ export function AuthPanel() {
       <div className="flex gap-2 text-xs">
         <button className="rounded px-2 py-1 hover:bg-white/10" onClick={() => setMode("login")}>Login</button>
         <button className="rounded px-2 py-1 hover:bg-white/10" onClick={() => setMode("signup")}>Sign up</button>
+      </div>
+      <div className="rounded-lg border border-cyan-400/30 bg-cyan-400/10 p-2 text-[11px] text-cyan-100">
+        <p>Default demo login: {DEMO_LOGIN_EMAIL} / {DEMO_LOGIN_PASSWORD}</p>
+        <button onClick={useDemoCredentials} className="mt-2 rounded border border-cyan-300/40 px-2 py-1">
+          Use demo credentials
+        </button>
       </div>
       <input
         className="w-full rounded border border-white/20 bg-transparent px-2 py-1 text-xs"
@@ -71,8 +91,12 @@ export function AuthPanel() {
         />
       )}
       {error && <p className="text-xs text-red-300">{error}</p>}
-      <button onClick={submit} className="rounded bg-cyan-400 px-2 py-1 text-xs font-semibold text-slate-950">
-        {mode === "login" ? "Login" : "Create account"}
+      <button
+        onClick={submit}
+        disabled={submitting}
+        className="rounded bg-cyan-400 px-2 py-1 text-xs font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {submitting ? "Submitting..." : mode === "login" ? "Login" : "Create account"}
       </button>
     </div>
   );

@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     firebase_project_id: str = ""
     firebase_credentials_path: str | None = None
     firebase_web_api_key: str = ""
+    demo_auth_enabled: bool = True
+    demo_auth_email: str = "demo@modal.local"
+    demo_auth_password: str = "demo12345"
+    demo_auth_user_id: str = "demo-user"
+    demo_auth_token: str = "modal-demo-token"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
