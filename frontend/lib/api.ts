@@ -40,6 +40,15 @@ export async function login(email: string, password: string): Promise<AuthPayloa
   return body.data as AuthPayload;
 }
 
+export async function demoLogin(): Promise<AuthPayload> {
+  const res = await fetch(`${API_BASE}/auth/demo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" }
+  });
+  const body = await parseResponse(res);
+  return body.data as AuthPayload;
+}
+
 export async function getSession(token: string) {
   const res = await fetch(`${API_BASE}/auth/session`, {
     headers: { Authorization: `Bearer ${token}` }

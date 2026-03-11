@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { DEMO_LOGIN_EMAIL, DEMO_LOGIN_PASSWORD, login, signup } from "@/lib/api";
+import { DEMO_LOGIN_EMAIL, DEMO_LOGIN_PASSWORD, demoLogin, login, signup } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 
 export function AuthPanel() {
@@ -24,6 +24,26 @@ export function AuthPanel() {
     setSubmitting(true);
     try {
       const auth = mode === "login" ? await login(formEmail, password) : await signup(formEmail, password, displayName);
+      setSession({
+        token: auth.id_token,
+        refreshToken: auth.refresh_token,
+        userId: auth.user_id,
+        email: auth.email
+      });
+    } catch (err) {
+      clearSession();
+      setError(err instanceof Error ? err.message : "Authentication failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitDemo() {
+    if (submitting) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      const auth = await demoLogin();
       setSession({
         token: auth.id_token,
         refreshToken: auth.refresh_token,
@@ -65,9 +85,18 @@ export function AuthPanel() {
       </div>
       <div className="rounded-lg border border-cyan-400/30 bg-cyan-400/10 p-2 text-[11px] text-cyan-100">
         <p>Default demo login: {DEMO_LOGIN_EMAIL} / {DEMO_LOGIN_PASSWORD}</p>
-        <button onClick={useDemoCredentials} className="mt-2 rounded border border-cyan-300/40 px-2 py-1">
-          Use demo credentials
-        </button>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button onClick={useDemoCredentials} className="rounded border border-cyan-300/40 px-2 py-1">
+            Use demo credentials
+          </button>
+          <button
+            onClick={submitDemo}
+            disabled={submitting}
+            className="rounded border border-cyan-300/40 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Demo login
+          </button>
+        </div>
       </div>
       <input
         className="w-full rounded border border-white/20 bg-transparent px-2 py-1 text-xs"

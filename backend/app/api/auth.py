@@ -120,6 +120,13 @@ async def login(req: AuthLoginRequest) -> dict:
     }
 
 
+@router.post("/demo")
+async def demo_login() -> dict:
+    if not is_demo_auth_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demo login disabled")
+    return build_demo_auth_response()
+
+
 @router.get("/session")
 async def session(user: AuthUser = Depends(get_current_user)) -> dict:
     return {
