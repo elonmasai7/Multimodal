@@ -5,7 +5,7 @@ services:
     build: ./backend
     container_name: modal-backend
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
       - ./backend/.env.example
     command: sh -c "python scripts/deployment_readiness.py --strict && uvicorn app.main:app --host 0.0.0.0 --port 8000"
