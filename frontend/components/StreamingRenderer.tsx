@@ -44,7 +44,21 @@ export function StreamingRenderer({ onQuizSubmit }: { onQuizSubmit?: (answer: st
               {item.type === "image" && imageUrl && <AIImageRenderer src={imageUrl} alt="AI generated visual" />}
 
               {item.type === "audio" && audioUrl && <NarrationPlayer src={audioUrl} />}
-              {item.type === "video" && videoUrl && <VideoPlayer src={videoUrl} />}
+              {item.type === "video" && videoUrl && (
+                <VideoPlayer
+                  src={videoUrl}
+                  clips={
+                    Array.isArray(data.clips)
+                      ? (data.clips as Record<string, unknown>[])
+                          .map((c) =>
+                            typeof c.signed_url === "string" ? c.signed_url
+                            : typeof c.url === "string" ? c.url : ""
+                          )
+                          .filter(Boolean)
+                      : undefined
+                  }
+                />
+              )}
 
               {item.type === "quiz" && (
                 <QuizPanel

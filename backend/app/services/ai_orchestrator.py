@@ -384,20 +384,16 @@ class GenAIMultimodalEngine:
             return "16:9"
         return "16:9" if w >= h else "9:16"
 
-    def _generate_video_genai(self, *, video_prompt: str, options: VideoOptions) -> dict:
+    def _generate_single_video_clip(self, *, video_prompt: str, resolution: str) -> dict:
         import time
 
         if not settings.gcs_media_bucket:
             raise MediaGenerationError("GCS_MEDIA_BUCKET is required for video output")
 
-        # Veo only supports specific durations; clamp to the largest that fits
-        veo_supported_durations = [4, 6, 8]
-        veo_duration = max(d for d in veo_supported_durations if d <= max(options.duration_seconds, 4))
-
         config = genai_types.GenerateVideosConfig(
             number_of_videos=1,
-            duration_seconds=veo_duration,
-            aspect_ratio=self._aspect_ratio(options.resolution),
+            duration_seconds=8,
+            aspect_ratio=self._aspect_ratio(resolution),
             output_gcs_uri=f"gs://{settings.gcs_media_bucket}/videos",
         )
         operation = self.genai.models.generate_videos(
@@ -426,6 +422,50 @@ class GenAIMultimodalEngine:
             raise MediaGenerationError("Veo video response missing URI")
         signed_url = self.gcs.sign_gcs_uri(gcs_uri)
         return {"gcs_uri": gcs_uri, "signed_url": signed_url}
+
+    def _generate_video_genai(self, *, video_prompt: str, options: VideoOptions) -> dict:
+        import math
+        import concurrent.futures
+
+        # Use 8-second clips (Veo max); determine how many clips for desired total duration
+        clip_duration = 8
+        desired_total = max(options.duration_seconds, clip_duration)
+        num_clips = math.ceil(desired_total / clip_duration)
+
+        if num_clips == 1:
+            result = self._generate_single_video_clip(
+                video_prompt=video_prompt,
+                resolution=options.resolution,
+            )
+            return {**result, "clips": [result]}
+
+        # Vary each clip prompt slightly for a coherent sequence
+        continuation_prefixes = [
+            "",
+            "Continuing: ",
+            "Further exploration of ",
+            "Final segment of ",
+            "Conclusion showing ",
+        ]
+
+        def _gen_clip(index: int) -> dict:
+            prefix = continuation_prefixes[index % len(continuation_prefixes)]
+            prompt = f"{prefix}{video_prompt}" if prefix else video_prompt
+            return self._generate_single_video_clip(
+                video_prompt=prompt,
+                resolution=options.resolution,
+            )
+
+        logger.info("video_clip_chain_start", extra={"num_clips": num_clips, "total_seconds": num_clips * clip_duration})
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_clips) as executor:
+            futures = [executor.submit(_gen_clip, i) for i in range(num_clips)]
+            clips = [f.result() for f in futures]
+
+        return {
+            "clips": clips,
+            "signed_url": clips[0]["signed_url"],
+            "gcs_uri": clips[0]["gcs_uri"],
+        }
 
     def _generate_video_sync(self, *, video_prompt: str, options: VideoOptions) -> dict:
         endpoint = settings.videofx_endpoint
