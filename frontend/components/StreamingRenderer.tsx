@@ -14,13 +14,14 @@ function toData(payload: unknown): Record<string, unknown> {
   return payload as Record<string, unknown>;
 }
 
-export function StreamingRenderer({ onQuizSubmit }: { onQuizSubmit?: (answer: string) => void }) {
+export function StreamingRenderer({ onQuizSubmit, exclude }: { onQuizSubmit?: (answer: string) => void; exclude?: string[] }) {
   const stream = useLearningStore((s) => s.stream);
+  const items = exclude ? stream.filter((item) => !exclude.includes(item.type)) : stream;
 
   return (
     <div className="space-y-3" aria-live="polite">
       <AnimatePresence initial={false}>
-        {stream.map((item) => {
+        {items.map((item) => {
           const data = toData(item.payload?.data);
           const imageUrl = typeof data.signed_url === "string" ? data.signed_url : typeof data.url === "string" ? data.url : null;
           const audioUrl = typeof data.signed_url === "string" ? data.signed_url : typeof data.url === "string" ? data.url : null;
