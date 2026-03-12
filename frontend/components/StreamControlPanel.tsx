@@ -50,7 +50,6 @@ export function StreamControlPanel({ kind, onSessionReady }: { kind: SessionKind
       </div>
       <PromptInput value={prompt} onChange={setPrompt} />
       {error && <p className="text-xs text-red-300">{error}</p>}
-      {streamUrl && <p className="text-[10px] break-all text-slate-500">{streamUrl}</p>}
       <div className="flex gap-2">
         <button onClick={start} className="rounded-xl bg-cyan-400 px-3 py-2 text-sm font-semibold text-slate-950">
           Start Live Stream
