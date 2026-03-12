@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from app.core.config import settings
@@ -7,6 +8,7 @@ from app.core.config import settings
 logger = logging.getLogger("observability")
 _tracer = None
 _meter = None
+_sqlalchemy_attrs_registered = False
 
 
 def get_tracer():
@@ -63,6 +65,50 @@ def configure_observability() -> None:
             logger.warning("otel_init_failed", extra={"error": str(exc)})
 
 
+def _redact_sql_params(parameters):
+    if parameters is None:
+        return None
+    if isinstance(parameters, (list, tuple)):
+        return ["***" for _ in parameters]
+    if isinstance(parameters, dict):
+        return {key: "***" for key in parameters}
+    return "***"
+
+
+def _should_record_sql(statement: str) -> bool:
+    normalized = statement.strip().lower()
+    return normalized.startswith("select") or normalized.startswith("with")
+
+
+def _register_sqlalchemy_span_attributes(engine) -> None:
+    global _sqlalchemy_attrs_registered
+    if _sqlalchemy_attrs_registered:
+        return
+    try:
+        from opentelemetry import trace
+        from sqlalchemy import event
+    except Exception:
+        return
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        span = trace.get_current_span()
+        if not span or not span.is_recording():
+            return
+        if _should_record_sql(statement):
+            span.set_attribute("db.statement", statement)
+        else:
+            span.set_attribute("db.statement", "<redacted>")
+        redacted = _redact_sql_params(parameters)
+        if redacted is not None:
+            try:
+                span.set_attribute("db.statement.parameters", json.dumps(redacted, ensure_ascii=True))
+            except Exception:
+                pass
+
+    _sqlalchemy_attrs_registered = True
+
+
 def instrument_app(app) -> None:
     if not settings.otel_endpoint:
         return
@@ -71,11 +117,19 @@ def instrument_app(app) -> None:
         from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.instrumentation.redis import RedisInstrumentor
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
         FastAPIInstrumentor.instrument_app(app)
         HTTPXClientInstrumentor().instrument()
         AsyncPGInstrumentor().instrument()
         RedisInstrumentor().instrument()
+        try:
+            from app.db.session import engine
+
+            SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
+            _register_sqlalchemy_span_attributes(engine.sync_engine)
+        except Exception as exc:
+            logger.warning("otel_sqlalchemy_instrumentation_failed", extra={"error": str(exc)})
         logger.info("otel_instrumentation_enabled")
     except Exception as exc:
         logger.warning("otel_instrumentation_failed", extra={"error": str(exc)})

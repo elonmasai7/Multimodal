@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     otel_service_name: str = "modal-backend"
     otel_traces_sample_rate: float = 0.0
     prometheus_enabled: bool = False
-    prometheus_path: str = "/metrics"
+    prometheus_pipeline_path: str = "/metrics/pipeline"
+    prometheus_system_path: str = "/metrics/system"
 
     firebase_project_id: str = ""
     firebase_credentials_path: str | None = None

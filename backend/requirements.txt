@@ -23,4 +23,5 @@ opentelemetry-instrumentation-fastapi==0.48b0
 opentelemetry-instrumentation-httpx==0.48b0
 opentelemetry-instrumentation-redis==0.48b0
 opentelemetry-instrumentation-asyncpg==0.48b0
+opentelemetry-instrumentation-sqlalchemy==0.48b0
 prometheus-client==0.20.0

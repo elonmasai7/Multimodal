@@ -15,6 +15,7 @@ from app.core.config import settings
 
 _request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 _stage_var: ContextVar[str | None] = ContextVar("pipeline_stage", default=None)
+_route_var: ContextVar[str | None] = ContextVar("route_name", default=None)
 
 
 def get_request_id() -> str | None:
@@ -27,6 +28,10 @@ def set_request_id(value: str | None) -> None:
 
 def set_stage(value: str | None) -> None:
     _stage_var.set(value)
+
+
+def set_route_name(value: str | None) -> None:
+    _route_var.set(value)
 
 
 def _now_iso() -> str:
@@ -49,6 +54,10 @@ class JsonFormatter(logging.Formatter):
         stage = getattr(record, "stage", None) or _stage_var.get()
         if stage:
             payload["stage"] = stage
+
+        route_name = getattr(record, "route_name", None) or _route_var.get()
+        if route_name:
+            payload["route_name"] = route_name
 
         extra_fields = {
             key: value
@@ -99,6 +108,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         request_id = str(uuid.uuid4())
         set_request_id(request_id)
         request.state.request_id = request_id
+        set_route_name(getattr(getattr(request, "scope", {}).get("route", None), "name", None))
         start = time.perf_counter()
         try:
             response = await call_next(request)
@@ -118,3 +128,4 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             set_request_id(None)
+            set_route_name(None)
