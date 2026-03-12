@@ -7,12 +7,19 @@ from app.core.errors import ExternalServiceError
 
 class FirestoreRepository:
     def __init__(self, *, project_id: str | None = None) -> None:
+        self.client: AsyncClient | None = None
+        self._init_error: Exception | None = None
         try:
             self.client = AsyncClient(project=project_id) if project_id else AsyncClient()
         except Exception as exc:
-            raise ExternalServiceError("Failed to initialize Firestore client") from exc
+            self._init_error = exc
+
+    def _ensure_ready(self) -> None:
+        if self.client is None:
+            raise ExternalServiceError("Firestore client is not configured") from self._init_error
 
     async def create_story_session(self, *, user_id: str, session_id: str, prompt: str, duration: int) -> None:
+        self._ensure_ready()
         doc = self.client.collection("story_sessions").document(session_id)
         await doc.set(
             {
@@ -28,12 +35,14 @@ class FirestoreRepository:
         )
 
     async def get_story_session(self, *, session_id: str) -> dict | None:
+        self._ensure_ready()
         snap = await self.client.collection("story_sessions").document(session_id).get()
         if not snap.exists:
             return None
         return snap.to_dict()
 
     async def append_story_choice(self, *, session_id: str, scene_id: str, choice_text: str, next_scene: str) -> None:
+        self._ensure_ready()
         doc = self.client.collection("story_sessions").document(session_id)
         snap = await doc.get()
         if not snap.exists:
@@ -45,6 +54,7 @@ class FirestoreRepository:
         await doc.update({"history": history, "current_scene": next_scene, "updated_at": datetime.now(UTC)})
 
     async def create_lesson_session(self, *, user_id: str, lesson_id: str, prompt: str, duration: int) -> None:
+        self._ensure_ready()
         doc = self.client.collection("lesson_sessions").document(lesson_id)
         await doc.set(
             {
@@ -58,6 +68,7 @@ class FirestoreRepository:
         )
 
     async def get_lesson_session(self, *, lesson_id: str) -> dict | None:
+        self._ensure_ready()
         snap = await self.client.collection("lesson_sessions").document(lesson_id).get()
         if not snap.exists:
             return None
@@ -71,6 +82,7 @@ class FirestoreRepository:
         answer: str,
         correct: bool,
     ) -> None:
+        self._ensure_ready()
         doc = self.client.collection("lesson_sessions").document(lesson_id)
         snap = await doc.get()
         if not snap.exists:
