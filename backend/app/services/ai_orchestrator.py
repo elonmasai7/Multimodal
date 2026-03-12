@@ -195,55 +195,37 @@ class GenAIMultimodalEngine:
     def generate_image(self, image_prompt: str) -> dict:
         self._init_clients()
         set_stage("rendering")
-        filename = f"/tmp/{uuid.uuid4()}.png"
-        try:
-            response = self.genai.models.generate_content(
-                model=self.image_model,
-                contents=image_prompt,
-                config=genai_types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                    image_config=genai_types.ImageConfig(aspect_ratio="16:9"),
+
+        def _call_generate(model_name: str) -> dict:
+            response = self.genai.models.generate_images(
+                model=model_name,
+                prompt=image_prompt,
+                config=genai_types.GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio="16:9",
+                    output_gcs_uri=f"gs://{settings.gcs_media_bucket}/images",
                 ),
             )
-            image = self._extract_image_from_response(response)
-            if image is None:
-                raise MediaGenerationError("Image response missing inline data")
-            image.save(filename)
+            generated = getattr(response, "generated_images", None)
+            if not generated:
+                raise MediaGenerationError("Image generation returned no images")
+            gcs_uri = getattr(generated[0].image, "gcs_uri", None)
+            if not gcs_uri:
+                raise MediaGenerationError("Image response missing GCS URI")
+            signed_url = self.gcs.sign_gcs_uri(gcs_uri)
+            return {"gcs_uri": gcs_uri, "signed_url": signed_url, "caption": image_prompt}
 
-            uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
-            return {
-                "gcs_uri": uploaded.gcs_uri,
-                "signed_url": uploaded.signed_url,
-                "caption": image_prompt,
-            }
+        try:
+            return _call_generate(self.image_model)
         except StorageError:
             raise
         except Exception as exc:
             if self.image_model_backup is not None:
                 logger.warning("primary_image_model_failed_fallback", extra={"error": str(exc)})
-                response = self.genai.models.generate_content(
-                    model=self.image_model_backup,
-                    contents=image_prompt,
-                    config=genai_types.GenerateContentConfig(
-                        response_modalities=["IMAGE"],
-                        image_config=genai_types.ImageConfig(aspect_ratio="16:9"),
-                    ),
-                )
-                image = self._extract_image_from_response(response)
-                if image is None:
-                    raise MediaGenerationError("Image response missing inline data")
-                image.save(filename)
-                uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
-                return {
-                    "gcs_uri": uploaded.gcs_uri,
-                    "signed_url": uploaded.signed_url,
-                    "caption": image_prompt,
-                }
+                return _call_generate(self.image_model_backup)
             if _is_gpu_error(exc):
                 raise MediaGenerationError("GPU memory exhausted during image generation", stage="rendering") from exc
             raise MediaGenerationError(str(exc)) from exc
-        finally:
-            _safe_unlink(filename)
 
     def synthesize_audio(self, text: str) -> dict:
         self._init_clients()
@@ -408,9 +390,13 @@ class GenAIMultimodalEngine:
         if not settings.gcs_media_bucket:
             raise MediaGenerationError("GCS_MEDIA_BUCKET is required for video output")
 
+        # Veo only supports specific durations; clamp to the largest that fits
+        veo_supported_durations = [4, 6, 8]
+        veo_duration = max(d for d in veo_supported_durations if d <= max(options.duration_seconds, 4))
+
         config = genai_types.GenerateVideosConfig(
             number_of_videos=1,
-            duration_seconds=options.duration_seconds,
+            duration_seconds=veo_duration,
             aspect_ratio=self._aspect_ratio(options.resolution),
             output_gcs_uri=f"gs://{settings.gcs_media_bucket}/videos",
         )
@@ -423,13 +409,21 @@ class GenAIMultimodalEngine:
             time.sleep(10)
             operation = self.genai.operations.get(operation)
 
-        response = getattr(operation, "response", None) or getattr(operation, "result", None)
-        generated = getattr(response, "generated_videos", None)
+        op_error = getattr(operation, "error", None)
+        if op_error:
+            raise MediaGenerationError(f"Veo operation failed: {op_error}")
+
+        result = getattr(operation, "result", None)
+        generated = getattr(result, "generated_videos", None) if result else None
         if not generated:
-            raise MediaGenerationError("GenAI video generation returned no videos")
+            raise MediaGenerationError(
+                f"GenAI video generation returned no videos (operation={operation!r})"
+            )
 
         video = generated[0].video
-        gcs_uri = video.uri
+        gcs_uri = getattr(video, "uri", None) or getattr(video, "gcs_uri", None)
+        if not gcs_uri:
+            raise MediaGenerationError("Veo video response missing URI")
         signed_url = self.gcs.sign_gcs_uri(gcs_uri)
         return {"gcs_uri": gcs_uri, "signed_url": signed_url}
 

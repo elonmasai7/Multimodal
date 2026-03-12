@@ -121,11 +121,18 @@ class AIIntegrationError(ModelInferenceError):
 
 
 class MediaGenerationError(AppError):
-    def __init__(self, message: str, *, stage: str = "rendering") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str = "rendering",
+        details: dict[Any, Any] | None = None,
+    ) -> None:
         super().__init__(
             message=message,
             stage=stage,
             status_code=502,
             safe_message="Media generation failed",
+            details=details,
             retryable=True,
         )
