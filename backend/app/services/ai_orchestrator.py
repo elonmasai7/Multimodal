@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -9,7 +10,21 @@ from datetime import UTC, datetime
 import httpx
 
 from app.core.config import settings
-from app.core.errors import AIIntegrationError, MediaGenerationError
+from app.core.errors import (
+    AIIntegrationError,
+    AppError,
+    ExternalServiceError,
+    MediaGenerationError,
+    ModelInferenceError,
+    StorageError,
+    TimeoutError,
+)
+from app.core.logging import set_stage
+from app.core.metrics import emit_failure_metric, emit_success_metric
+from app.core.observability import get_tracer
+from app.core.retry import retry_async, retry_sync
+from app.core.validation import fallback_resolutions, validate_prompt, validate_resolution
+from app.models.schemas import VideoOptions
 from app.services.gcs_media import GCSMediaService
 from app.services.redis_state import RedisStateManager
 
@@ -30,6 +45,15 @@ except Exception:
 logger = logging.getLogger("ai.orchestrator")
 
 
+GPU_ERROR_MARKERS = (
+    "CUDA out of memory",
+    "RESOURCE_EXHAUSTED",
+    "out of memory",
+    "OOM",
+    "device lost",
+)
+
+
 def new_session_id() -> str:
     return str(uuid.uuid4())
 
@@ -48,10 +72,25 @@ def _sse(event: str, session_type: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
 
 
+def _safe_unlink(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        logger.warning("temp_cleanup_failed", extra={"path": path})
+
+
+def _is_gpu_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(marker.lower() in message.lower() for marker in GPU_ERROR_MARKERS)
+
+
 class VertexMultimodalEngine:
     def __init__(self) -> None:
         self._ready = False
         self.gcs: GCSMediaService | None = None
+        self.text_model_backup = None
+        self.image_model_backup = None
 
     def _init_clients(self) -> None:
         if self._ready:
@@ -69,6 +108,10 @@ class VertexMultimodalEngine:
         vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
         self.text_model = GenerativeModel(settings.vertex_model_text)
         self.image_model = ImageGenerationModel.from_pretrained(settings.vertex_model_image)
+        if settings.vertex_model_text_backup:
+            self.text_model_backup = GenerativeModel(settings.vertex_model_text_backup)
+        if settings.vertex_model_image_backup:
+            self.image_model_backup = ImageGenerationModel.from_pretrained(settings.vertex_model_image_backup)
         self.tts_client = texttospeech.TextToSpeechClient() if texttospeech else None
         self.gcs = GCSMediaService()
         self._ready = True
@@ -80,78 +123,200 @@ class VertexMultimodalEngine:
             "quiz must include id, question, options (array), correct. "
             f"Build a {session_type} learning experience for prompt: {prompt}"
         )
-        response = self.text_model.generate_content(instruction)
-        text = getattr(response, "text", "")
-        if not text:
-            raise AIIntegrationError("Gemini returned empty content")
+        set_stage("inference")
+
+        def _call(model) -> dict:
+            response = model.generate_content(instruction)
+            text = getattr(response, "text", "")
+            if not text:
+                raise AIIntegrationError("Gemini returned empty content")
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                logger.warning("gemini_json_parse_failed")
+                return {
+                    "title": f"{session_type.title()} Session",
+                    "narration": text,
+                    "sections": ["Introduction", "Visual concept", "Practice", "Quiz"],
+                    "image_prompt": f"Educational diagram about {prompt}",
+                    "video_prompt": f"Short explanation video about {prompt}",
+                    "quiz": {
+                        "id": "q1",
+                        "question": "Which choice best summarizes the concept?",
+                        "options": ["A", "B", "C", "D"],
+                        "correct": "B",
+                    },
+                }
+
+        def _run_with_model(model) -> dict:
+            return retry_sync(
+                lambda: _call(model),
+                attempts=settings.retry_max_attempts,
+                base_delay=settings.retry_base_delay_seconds,
+                max_delay=settings.retry_max_delay_seconds,
+                stage="inference",
+                retry_on=(Exception,),
+            )
 
         try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("Gemini JSON parse failed; applying fallback extractor")
-            return {
-                "title": f"{session_type.title()} Session",
-                "narration": text,
-                "sections": ["Introduction", "Visual concept", "Practice", "Quiz"],
-                "image_prompt": f"Educational diagram about {prompt}",
-                "video_prompt": f"Short explanation video about {prompt}",
-                "quiz": {
-                    "id": "q1",
-                    "question": "Which choice best summarizes the concept?",
-                    "options": ["A", "B", "C", "D"],
-                    "correct": "B",
-                },
-            }
+            return _run_with_model(self.text_model)
+        except Exception as exc:
+            if self.text_model_backup is not None:
+                logger.warning("primary_text_model_failed_fallback", extra={"error": str(exc)})
+                return _run_with_model(self.text_model_backup)
+            if _is_gpu_error(exc):
+                raise ModelInferenceError(str(exc), safe_message="GPU memory exhausted during inference") from exc
+            raise ModelInferenceError(str(exc)) from exc
 
     def generate_image(self, image_prompt: str) -> dict:
         self._init_clients()
-        images = self.image_model.generate_images(prompt=image_prompt, number_of_images=1)
-        image = images[0]
+        set_stage("rendering")
         filename = f"/tmp/{uuid.uuid4()}.png"
-        image.save(location=filename)
+        try:
+            images = self.image_model.generate_images(prompt=image_prompt, number_of_images=1)
+            image = images[0]
+            image.save(location=filename)
 
-        uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
-        return {
-            "gcs_uri": uploaded.gcs_uri,
-            "signed_url": uploaded.signed_url,
-            "caption": image_prompt,
-        }
+            uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
+            return {
+                "gcs_uri": uploaded.gcs_uri,
+                "signed_url": uploaded.signed_url,
+                "caption": image_prompt,
+            }
+        except StorageError:
+            raise
+        except Exception as exc:
+            if self.image_model_backup is not None:
+                logger.warning("primary_image_model_failed_fallback", extra={"error": str(exc)})
+                images = self.image_model_backup.generate_images(prompt=image_prompt, number_of_images=1)
+                image = images[0]
+                image.save(location=filename)
+                uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
+                return {
+                    "gcs_uri": uploaded.gcs_uri,
+                    "signed_url": uploaded.signed_url,
+                    "caption": image_prompt,
+                }
+            if _is_gpu_error(exc):
+                raise MediaGenerationError("GPU memory exhausted during image generation", stage="rendering") from exc
+            raise MediaGenerationError(str(exc)) from exc
+        finally:
+            _safe_unlink(filename)
 
     def synthesize_audio(self, text: str) -> dict:
         self._init_clients()
         if not self.tts_client:
             raise MediaGenerationError("Google Text-to-Speech client unavailable")
 
-        synthesis_input = texttospeech.SynthesisInput(text=text[:5000])
-        voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
-        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-        response = self.tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+        set_stage("rendering")
         filename = f"/tmp/{uuid.uuid4()}.mp3"
-        with open(filename, "wb") as f:
-            f.write(response.audio_content)
+        try:
+            synthesis_input = texttospeech.SynthesisInput(text=text[:5000])
+            voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Neural2-C")
+            audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+            response = self.tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+            with open(filename, "wb") as f:
+                f.write(response.audio_content)
 
-        uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="audio", content_type="audio/mpeg")
-        return {
-            "gcs_uri": uploaded.gcs_uri,
-            "signed_url": uploaded.signed_url,
-        }
+            uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="audio", content_type="audio/mpeg")
+            return {
+                "gcs_uri": uploaded.gcs_uri,
+                "signed_url": uploaded.signed_url,
+            }
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise MediaGenerationError(str(exc)) from exc
+        finally:
+            _safe_unlink(filename)
 
-    async def generate_video(self, *, video_prompt: str) -> dict:
+    async def generate_video(self, *, video_prompt: str, options: VideoOptions) -> dict:
         self._init_clients()
+        set_stage("inference")
+        validate_resolution(options.resolution)
         headers = {"Content-Type": "application/json"}
         if settings.videofx_api_key:
             headers["Authorization"] = f"Bearer {settings.videofx_api_key}"
 
-        payload = {"prompt": video_prompt, "duration_seconds": 8}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(str(settings.videofx_endpoint), headers=headers, json=payload)
-        if response.status_code >= 400:
-            raise MediaGenerationError(f"VideoFX request failed: {response.status_code}")
+        async def _call_endpoint(endpoint: str, payload: dict) -> dict:
+            async with httpx.AsyncClient(timeout=settings.videofx_timeout_seconds) as client:
+                response = await client.post(endpoint, headers=headers, json=payload)
+            if response.status_code in (429, 500, 502, 503, 504):
+                raise ExternalServiceError(f"VideoFX transient error: {response.status_code}", stage="inference")
+            if response.status_code >= 400:
+                raise MediaGenerationError(f"VideoFX request failed: {response.status_code}", stage="inference")
 
-        data = response.json()
-        if "url" not in data and "signed_url" not in data:
-            raise MediaGenerationError("VideoFX response missing url/signed_url")
-        return data
+            data = response.json()
+            if "url" not in data and "signed_url" not in data:
+                raise MediaGenerationError("VideoFX response missing url/signed_url", stage="inference")
+            return data
+
+        base_payload = {
+            "prompt": video_prompt,
+            "duration_seconds": options.duration_seconds,
+            "resolution": options.resolution,
+            "fps": options.fps,
+            "format": options.format,
+        }
+        endpoints = [settings.videofx_endpoint]
+        if settings.videofx_fallback_endpoint:
+            endpoints.append(settings.videofx_fallback_endpoint)
+
+        attempts = []
+        for endpoint in endpoints:
+            attempts.append((endpoint, base_payload))
+            fallback_duration = min(options.duration_seconds, settings.videofx_fallback_duration_seconds)
+            fallback_resolution = settings.videofx_fallback_resolution
+            if fallback_resolution and fallback_resolution != options.resolution:
+                attempts.append(
+                    (
+                        endpoint,
+                        {
+                            **base_payload,
+                            "duration_seconds": fallback_duration,
+                            "resolution": fallback_resolution,
+                        },
+                    )
+                )
+
+            for resolution in fallback_resolutions(options.resolution):
+                attempts.append(
+                    (
+                        endpoint,
+                        {
+                            **base_payload,
+                            "duration_seconds": fallback_duration,
+                            "resolution": resolution,
+                        },
+                    )
+                )
+
+        last_exc: Exception | None = None
+        for endpoint, payload in attempts:
+            if endpoint is None:
+                continue
+            try:
+                return await retry_async(
+                    lambda: _call_endpoint(str(endpoint), payload),
+                    attempts=settings.retry_max_attempts,
+                    base_delay=settings.retry_base_delay_seconds,
+                    max_delay=settings.retry_max_delay_seconds,
+                    stage="inference",
+                    retry_on=(httpx.TimeoutException, httpx.TransportError, ExternalServiceError),
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "videofx_attempt_failed",
+                    extra={
+                        "endpoint": endpoint,
+                        "resolution": payload.get("resolution"),
+                        "duration_seconds": payload.get("duration_seconds"),
+                        "error": str(exc),
+                    },
+                )
+                continue
+        raise MediaGenerationError(str(last_exc) if last_exc else "Video generation failed", stage="inference")
 
 
 engine = VertexMultimodalEngine()
@@ -162,21 +327,77 @@ def _cache_key(prompt: str, session_type: str) -> str:
     return hashlib.sha256(f"{session_type}:{prompt}".encode()).hexdigest()
 
 
-async def stream_multimodal_events(prompt: str, session_type: str) -> AsyncGenerator[str, None]:
-    key = _cache_key(prompt, session_type)
-    cached = await redis_state.get_ai_cache(key=key)
-    if cached:
-        yield _sse("status", session_type, {"message": "Loaded cached generation"})
-        for event_name in ["text", "image", "video", "audio", "quiz"]:
-            if event_name in cached:
-                yield _sse(event_name, session_type, cached[event_name])
-        yield _sse("done", session_type, {"status": "completed", "cached": True})
+async def stream_multimodal_events(
+    prompt: str,
+    session_type: str,
+    *,
+    video_options: VideoOptions | None = None,
+    request_id: str | None = None,
+) -> AsyncGenerator[str, None]:
+    tracer = get_tracer()
+    span_manager = None
+    if tracer:
+        span_manager = tracer.start_as_current_span(
+            "pipeline.generate",
+            attributes={
+                "session_type": session_type,
+                "request_id": request_id or "",
+            },
+        )
+    if span_manager:
+        span_manager.__enter__()
+
+    try:
+        validated_prompt = validate_prompt(prompt)
+        options = video_options or VideoOptions()
+        validate_resolution(options.resolution)
+
+        options_key = json.dumps(options.model_dump(), sort_keys=True)
+        key = _cache_key(f"{validated_prompt}:{options_key}", session_type)
+        cached = await redis_state.get_ai_cache(key=key)
+        if cached:
+            yield _sse("status", session_type, {"message": "Loaded cached generation"})
+            for event_name in ["text", "image", "video", "audio", "quiz"]:
+                if event_name in cached:
+                    yield _sse(event_name, session_type, cached[event_name])
+            yield _sse("done", session_type, {"status": "completed", "cached": True})
+            return
+    except AppError as exc:
+        yield _sse("error", session_type, exc.to_payload(request_id=request_id))
+        yield _sse("done", session_type, {"status": "failed"})
         return
 
     start = datetime.now(UTC)
     try:
         yield _sse("status", session_type, {"message": "Generating structured lesson plan with Gemini"})
-        plan = await asyncio.to_thread(engine.generate_lesson_plan, prompt, session_type)
+        async def _run_plan():
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(engine.generate_lesson_plan, validated_prompt, session_type),
+                    timeout=settings.model_inference_timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError("Text model timed out", stage="inference") from exc
+
+        if tracer:
+            with tracer.start_as_current_span("pipeline.text", attributes={"stage": "inference"}):
+                plan = await retry_async(
+                    _run_plan,
+                    attempts=settings.retry_max_attempts,
+                    base_delay=settings.retry_base_delay_seconds,
+                    max_delay=settings.retry_max_delay_seconds,
+                    stage="inference",
+                    retry_on=(TimeoutError, ModelInferenceError, AIIntegrationError),
+                )
+        else:
+            plan = await retry_async(
+                _run_plan,
+                attempts=settings.retry_max_attempts,
+                base_delay=settings.retry_base_delay_seconds,
+                max_delay=settings.retry_max_delay_seconds,
+                stage="inference",
+                retry_on=(TimeoutError, ModelInferenceError, AIIntegrationError),
+            )
 
         narration = str(plan.get("narration", ""))
         title = str(plan.get("title", f"{session_type.title()} Session"))
@@ -192,15 +413,82 @@ async def stream_multimodal_events(prompt: str, session_type: str) -> AsyncGener
         yield _sse("text", session_type, text_payload)
 
         yield _sse("status", session_type, {"message": "Generating image with Imagen"})
-        image_payload = await asyncio.to_thread(engine.generate_image, str(plan.get("image_prompt", prompt)))
+        async def _run_image():
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(engine.generate_image, str(plan.get("image_prompt", validated_prompt))),
+                    timeout=settings.media_generation_timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError("Image generation timed out", stage="rendering") from exc
+
+        if tracer:
+            with tracer.start_as_current_span("pipeline.image", attributes={"stage": "rendering"}):
+                image_payload = await retry_async(
+                    _run_image,
+                    attempts=settings.retry_max_attempts,
+                    base_delay=settings.retry_base_delay_seconds,
+                    max_delay=settings.retry_max_delay_seconds,
+                    stage="rendering",
+                    retry_on=(TimeoutError, MediaGenerationError, StorageError),
+                )
+        else:
+            image_payload = await retry_async(
+                _run_image,
+                attempts=settings.retry_max_attempts,
+                base_delay=settings.retry_base_delay_seconds,
+                max_delay=settings.retry_max_delay_seconds,
+                stage="rendering",
+                retry_on=(TimeoutError, MediaGenerationError, StorageError),
+            )
         yield _sse("image", session_type, image_payload)
 
         yield _sse("status", session_type, {"message": "Generating video with VideoFX"})
-        video_payload = await engine.generate_video(video_prompt=str(plan.get("video_prompt", prompt)))
+        try:
+            if tracer:
+                with tracer.start_as_current_span("pipeline.video", attributes={"stage": "inference"}):
+                    video_payload = await asyncio.wait_for(
+                        engine.generate_video(video_prompt=str(plan.get("video_prompt", validated_prompt)), options=options),
+                        timeout=settings.videofx_timeout_seconds + 10,
+                    )
+            else:
+                video_payload = await asyncio.wait_for(
+                    engine.generate_video(video_prompt=str(plan.get("video_prompt", validated_prompt)), options=options),
+                    timeout=settings.videofx_timeout_seconds + 10,
+                )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError("Video generation timed out", stage="inference") from exc
         yield _sse("video", session_type, video_payload)
 
         yield _sse("status", session_type, {"message": "Generating narration audio"})
-        audio_payload = await asyncio.to_thread(engine.synthesize_audio, narration)
+        async def _run_audio():
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(engine.synthesize_audio, narration),
+                    timeout=settings.media_generation_timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError("Audio generation timed out", stage="rendering") from exc
+
+        if tracer:
+            with tracer.start_as_current_span("pipeline.audio", attributes={"stage": "rendering"}):
+                audio_payload = await retry_async(
+                    _run_audio,
+                    attempts=settings.retry_max_attempts,
+                    base_delay=settings.retry_base_delay_seconds,
+                    max_delay=settings.retry_max_delay_seconds,
+                    stage="rendering",
+                    retry_on=(TimeoutError, MediaGenerationError, StorageError),
+                )
+        else:
+            audio_payload = await retry_async(
+                _run_audio,
+                attempts=settings.retry_max_attempts,
+                base_delay=settings.retry_base_delay_seconds,
+                max_delay=settings.retry_max_delay_seconds,
+                stage="rendering",
+                retry_on=(TimeoutError, MediaGenerationError, StorageError),
+            )
         yield _sse("audio", session_type, audio_payload)
 
         quiz_payload = plan.get("quiz", {
@@ -224,9 +512,23 @@ async def stream_multimodal_events(prompt: str, session_type: str) -> AsyncGener
         )
 
         elapsed_ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
-        logger.info("generation_complete session_type=%s elapsed_ms=%s", session_type, elapsed_ms)
+        logger.info("generation_complete", extra={"session_type": session_type, "elapsed_ms": elapsed_ms})
+        emit_success_metric(stage="response", duration_ms=elapsed_ms)
         yield _sse("done", session_type, {"status": "completed", "elapsed_ms": elapsed_ms})
     except Exception as exc:
-        logger.exception("generation_failed session_type=%s", session_type)
-        yield _sse("error", session_type, {"message": str(exc)})
+        app_error = exc if isinstance(exc, AppError) else ExternalServiceError(str(exc), stage="response")
+        logger.exception(
+            "generation_failed",
+            extra={
+                "session_type": session_type,
+                "request_id": request_id,
+                "stage": app_error.stage,
+                "error_type": app_error.type,
+            },
+        )
+        emit_failure_metric(stage=app_error.stage, error_type=app_error.type)
+        yield _sse("error", session_type, app_error.to_payload(request_id=request_id))
         yield _sse("done", session_type, {"status": "failed"})
+    finally:
+        if span_manager:
+            span_manager.__exit__(None, None, None)

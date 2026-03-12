@@ -54,6 +54,15 @@ Set these in backend `.env`:
 - `POSTGRES_URL`
 - `REDIS_URL`
 
+Optional observability:
+- `SENTRY_DSN`
+- `SENTRY_TRACES_SAMPLE_RATE`
+- `OTEL_ENDPOINT` (OTLP HTTP endpoint)
+- `OTEL_SERVICE_NAME`
+- `OTEL_TRACES_SAMPLE_RATE`
+- `PROMETHEUS_ENABLED` (true/false)
+- `PROMETHEUS_PATH` (default `/metrics`)
+
 ## Deployment Readiness Check
 Before startup, run:
 

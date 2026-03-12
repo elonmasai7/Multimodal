@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.crud_progress import create_quiz_attempt, get_progress, upsert_progress
 from app.db.session import get_db_session
 from app.deps.auth import AuthUser, get_current_user, get_token_from_request, verify_token
-from app.models.schemas import CreateSessionRequest, QuizSubmitRequest
+from app.models.schemas import CreateSessionRequest, QuizSubmitRequest, VideoOptions
 from app.services.ai_orchestrator import new_session_id, stream_multimodal_events
 from app.services.firestore_repo import FirestoreRepository
 from app.services.redis_state import RedisStateManager
@@ -59,6 +59,10 @@ async def lesson_stream(
     lesson_id: str,
     prompt: str | None = None,
     token: str | None = None,
+    duration_seconds: int | None = None,
+    resolution: str | None = None,
+    fps: int | None = None,
+    format: str | None = None,
 ) -> StreamingResponse:
     resolved_token = token or get_token_from_request(request)
     if not resolved_token:
@@ -70,9 +74,25 @@ async def lesson_stream(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lesson session not found")
 
     stream_prompt = prompt or lesson.get("prompt", "Lesson session")
+    base_duration = duration_seconds or int(lesson.get("duration") or 0) or None
+    video_data: dict[str, object] = {}
+    if base_duration is not None:
+        video_data["duration_seconds"] = base_duration
+    if resolution is not None:
+        video_data["resolution"] = resolution
+    if fps is not None:
+        video_data["fps"] = fps
+    if format is not None:
+        video_data["format"] = format
+    video_options = VideoOptions.model_validate(video_data)
 
     async def event_generator():
-        async for chunk in stream_multimodal_events(prompt=stream_prompt, session_type="lesson"):
+        async for chunk in stream_multimodal_events(
+            prompt=stream_prompt,
+            session_type="lesson",
+            video_options=video_options,
+            request_id=getattr(request.state, "request_id", None),
+        ):
             if "event: quiz\n" in chunk:
                 try:
                     data_line = chunk.split("\n")[1]

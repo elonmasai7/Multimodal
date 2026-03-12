@@ -1,14 +1,13 @@
 import json
 import logging
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.exceptions import RequestValidationError
+from fastapi import FastAPI, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from app.api import analytics, auth, lesson, story
-from app.core.errors import AIIntegrationError, ExternalServiceError, MediaGenerationError
+from app.core.error_handling import ErrorHandlingMiddleware
 from app.core.logging import RequestLoggingMiddleware, configure_logging
+from app.core.observability import configure_observability, instrument_app
 from app.core.config import settings
 from app.db.models import Base
 from app.db.session import engine
@@ -17,7 +16,10 @@ configure_logging()
 logger = logging.getLogger("api.main")
 
 app = FastAPI(title=settings.app_name)
+configure_observability()
+instrument_app(app)
 
+app.add_middleware(ErrorHandlingMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -33,37 +35,6 @@ app.include_router(lesson.router, prefix=settings.api_prefix)
 app.include_router(analytics.router, prefix=settings.api_prefix)
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(_: Request, exc: HTTPException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"status": "error", "message": exc.detail},
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(_: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={"status": "error", "message": "Validation failed", "details": {"errors": exc.errors()}},
-    )
-
-
-@app.exception_handler(AIIntegrationError)
-async def ai_error_handler(_: Request, exc: AIIntegrationError):
-    return JSONResponse(status_code=502, content={"status": "error", "message": str(exc)})
-
-
-@app.exception_handler(MediaGenerationError)
-async def media_error_handler(_: Request, exc: MediaGenerationError):
-    return JSONResponse(status_code=502, content={"status": "error", "message": str(exc)})
-
-
-@app.exception_handler(ExternalServiceError)
-async def external_service_error_handler(_: Request, exc: ExternalServiceError):
-    return JSONResponse(status_code=503, content={"status": "error", "message": str(exc)})
-
-
 @app.on_event("startup")
 async def startup() -> None:
     async with engine.begin() as conn:
@@ -74,6 +45,17 @@ async def startup() -> None:
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+if settings.prometheus_enabled:
+    try:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        @app.get(settings.prometheus_path)
+        async def metrics() -> Response:
+            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    except Exception as exc:
+        logger.warning("prometheus_endpoint_disabled", extra={"error": str(exc)})
 
 
 @app.websocket("/ws/stream")

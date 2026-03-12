@@ -7,6 +7,8 @@ from datetime import timedelta
 from google.cloud import storage
 
 from app.core.config import settings
+from app.core.errors import StorageError
+from app.core.retry import retry_sync
 
 
 @dataclass
@@ -20,7 +22,7 @@ class UploadedMedia:
 class GCSMediaService:
     def __init__(self) -> None:
         if not settings.gcs_media_bucket:
-            raise RuntimeError("GCS_MEDIA_BUCKET is required for media uploads")
+            raise StorageError("GCS_MEDIA_BUCKET is required for media uploads", retryable=False)
         self.client = storage.Client(project=settings.gcp_project_id or None)
         self.bucket = self.client.bucket(settings.gcs_media_bucket)
 
@@ -30,16 +32,37 @@ class GCSMediaService:
         detected = content_type or mimetypes.guess_type(local_path)[0] or "application/octet-stream"
 
         blob = self.bucket.blob(blob_name)
-        blob.upload_from_filename(local_path, content_type=detected)
-
         try:
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(seconds=settings.gcs_signed_url_ttl_seconds),
-                method="GET",
+            retry_sync(
+                lambda: blob.upload_from_filename(local_path, content_type=detected),
+                attempts=settings.retry_max_attempts,
+                base_delay=settings.retry_base_delay_seconds,
+                max_delay=settings.retry_max_delay_seconds,
+                stage="storage",
+                retry_on=(Exception,),
             )
         except Exception as exc:
-            raise RuntimeError(
+            raise StorageError(f"Failed to upload media: {exc}") from exc
+
+        try:
+            signed_url = retry_sync(
+                lambda: blob.generate_signed_url(
+                    version="v4",
+                    expiration=timedelta(seconds=settings.gcs_signed_url_ttl_seconds),
+                    method="GET",
+                ),
+                attempts=settings.retry_max_attempts,
+                base_delay=settings.retry_base_delay_seconds,
+                max_delay=settings.retry_max_delay_seconds,
+                stage="storage",
+                retry_on=(Exception,),
+            )
+        except Exception as exc:
+            try:
+                blob.delete()
+            except Exception:
+                pass
+            raise StorageError(
                 "Failed to generate signed URL. Ensure Cloud Run service account can sign blobs "
                 "(roles/iam.serviceAccountTokenCreator) and has storage object access."
             ) from exc
