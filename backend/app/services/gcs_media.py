@@ -24,6 +24,18 @@ class GCSMediaService:
         self.client = storage.Client(project=settings.gcp_project_id or None)
         self.bucket = self.client.bucket(settings.gcs_media_bucket)
 
+    def sign_gcs_uri(self, gcs_uri: str) -> str:
+        """Generate a signed URL for an existing GCS object given its gs:// URI."""
+        # gs://bucket/path/to/blob  ->  bucket, path/to/blob
+        without_scheme = gcs_uri[len("gs://"):]
+        bucket_name, _, blob_name = without_scheme.partition("/")
+        blob = self.client.bucket(bucket_name).blob(blob_name)
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=settings.gcs_signed_url_ttl_seconds),
+            method="GET",
+        )
+
     def upload_file_and_sign(self, *, local_path: str, prefix: str, content_type: str | None = None) -> UploadedMedia:
         ext = os.path.splitext(local_path)[1]
         blob_name = f"{prefix}/{uuid.uuid4()}{ext}"

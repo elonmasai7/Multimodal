@@ -37,6 +37,10 @@ class AuthLoginRequest(BaseModel):
     password: str = Field(min_length=8)
 
 
+class AuthRefreshRequest(BaseModel):
+    refresh_token: str
+
+
 class AuthResponse(BaseModel):
     status: str = "ok"
     data: dict[str, Any]

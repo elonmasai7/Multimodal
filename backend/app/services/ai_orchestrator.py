@@ -88,8 +88,20 @@ class VertexMultimodalEngine:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            logger.warning("Gemini JSON parse failed; applying fallback extractor")
-            return {
+            pass
+
+        # Gemini often wraps JSON in markdown code blocks — strip and retry
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("\n", 1)[-1]
+            stripped = stripped.rsplit("```", 1)[0].strip()
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning("Gemini JSON parse failed; applying fallback extractor")
+        return {
                 "title": f"{session_type.title()} Session",
                 "narration": text,
                 "sections": ["Introduction", "Visual concept", "Practice", "Quiz"],
@@ -136,22 +148,39 @@ class VertexMultimodalEngine:
             "signed_url": uploaded.signed_url,
         }
 
+    def _generate_video_sync(self, *, video_prompt: str) -> dict:
+        import time
+        from google import genai as google_genai
+        from google.genai import types as genai_types
+
+        client = google_genai.Client(project=settings.gcp_project_id, location=settings.gcp_region)
+        source = genai_types.GenerateVideosSource(prompt=video_prompt)
+        config = genai_types.GenerateVideosConfig(
+            aspect_ratio="16:9",
+            number_of_videos=1,
+            duration_seconds=8,
+            person_generation="allow_all",
+            generate_audio=False,
+            resolution="720p",
+            output_gcs_uri=f"gs://{settings.gcs_media_bucket}/videos",
+        )
+        operation = client.models.generate_videos(model="veo-3.1-generate-001", source=source, config=config)
+        while not operation.done:
+            time.sleep(10)
+            operation = client.operations.get(operation)
+
+        response = operation.result
+        if not response or not response.generated_videos:
+            raise MediaGenerationError("Veo returned no videos")
+
+        video = response.generated_videos[0].video
+        gcs_uri = video.uri
+        signed_url = self.gcs.sign_gcs_uri(gcs_uri)
+        return {"gcs_uri": gcs_uri, "signed_url": signed_url}
+
     async def generate_video(self, *, video_prompt: str) -> dict:
         self._init_clients()
-        headers = {"Content-Type": "application/json"}
-        if settings.videofx_api_key:
-            headers["Authorization"] = f"Bearer {settings.videofx_api_key}"
-
-        payload = {"prompt": video_prompt, "duration_seconds": 8}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(str(settings.videofx_endpoint), headers=headers, json=payload)
-        if response.status_code >= 400:
-            raise MediaGenerationError(f"VideoFX request failed: {response.status_code}")
-
-        data = response.json()
-        if "url" not in data and "signed_url" not in data:
-            raise MediaGenerationError("VideoFX response missing url/signed_url")
-        return data
+        return await asyncio.to_thread(self._generate_video_sync, video_prompt=video_prompt)
 
 
 engine = VertexMultimodalEngine()
@@ -196,8 +225,12 @@ async def stream_multimodal_events(prompt: str, session_type: str) -> AsyncGener
         yield _sse("image", session_type, image_payload)
 
         yield _sse("status", session_type, {"message": "Generating video with VideoFX"})
-        video_payload = await engine.generate_video(video_prompt=str(plan.get("video_prompt", prompt)))
-        yield _sse("video", session_type, video_payload)
+        try:
+            video_payload = await engine.generate_video(video_prompt=str(plan.get("video_prompt", prompt)))
+            yield _sse("video", session_type, video_payload)
+        except Exception as video_exc:
+            logger.warning("video_generation_skipped reason=%s", video_exc)
+            video_payload = None
 
         yield _sse("status", session_type, {"message": "Generating narration audio"})
         audio_payload = await asyncio.to_thread(engine.synthesize_audio, narration)

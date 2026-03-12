@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.config import settings
 from app.core.demo_auth import build_demo_auth_response, is_demo_credentials, is_demo_auth_enabled
 from app.deps.auth import AuthUser, get_current_user
-from app.models.schemas import AuthLoginRequest, AuthSignupRequest
+from app.models.schemas import AuthLoginRequest, AuthRefreshRequest, AuthSignupRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -116,6 +116,31 @@ async def login(req: AuthLoginRequest) -> dict:
             "user_id": data.get("localId"),
             "email": data.get("email"),
             "display_name": data.get("displayName"),
+        },
+    }
+
+
+@router.post("/refresh")
+async def refresh(req: AuthRefreshRequest) -> dict:
+    if not settings.firebase_web_api_key:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="FIREBASE_WEB_API_KEY not configured")
+    url = f"https://securetoken.googleapis.com/v1/token?key={settings.firebase_web_api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, data={"grant_type": "refresh_token", "refresh_token": req.refresh_token})
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Authentication service timed out") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication service unavailable") from exc
+    if response.status_code >= 400:
+        _map_firebase_error(response, status.HTTP_401_UNAUTHORIZED, "Token refresh failed")
+    data = response.json()
+    return {
+        "status": "ok",
+        "data": {
+            "id_token": data.get("id_token"),
+            "refresh_token": data.get("refresh_token"),
+            "expires_in": data.get("expires_in"),
         },
     }
 
