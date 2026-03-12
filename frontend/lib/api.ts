@@ -40,6 +40,16 @@ export async function login(email: string, password: string): Promise<AuthPayloa
   return body.data as AuthPayload;
 }
 
+export async function refreshAuthToken(refreshToken: string): Promise<Pick<AuthPayload, "id_token" | "refresh_token">> {
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken })
+  });
+  const body = await parseResponse(res);
+  return body.data;
+}
+
 export async function demoLogin(): Promise<AuthPayload> {
   const res = await fetch(`${API_BASE}/auth/demo`, {
     method: "POST",
