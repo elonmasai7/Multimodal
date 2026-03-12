@@ -240,40 +240,153 @@ class VertexMultimodalEngine:
         finally:
             _safe_unlink(filename)
 
-    def _generate_video_sync(self, *, video_prompt: str) -> dict:
-        import time
-        from google import genai as google_genai
-        from google.genai import types as genai_types
+    def _extract_video_urls(self, data: object) -> tuple[str | None, str | None]:
+        if not isinstance(data, dict):
+            return None, None
 
-        client = google_genai.Client(project=settings.gcp_project_id, location=settings.gcp_region)
-        source = genai_types.GenerateVideosSource(prompt=video_prompt)
-        config = genai_types.GenerateVideosConfig(
-            aspect_ratio="16:9",
-            number_of_videos=1,
-            duration_seconds=8,
-            person_generation="allow_all",
-            generate_audio=False,
-            resolution="720p",
-            output_gcs_uri=f"gs://{settings.gcs_media_bucket}/videos",
+        def _pick(d: dict, keys: tuple[str, ...]) -> str | None:
+            for key in keys:
+                value = d.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            return None
+
+        gcs_uri = _pick(data, ("gcs_uri", "gcsUri", "output_gcs_uri", "outputGcsUri", "uri"))
+        signed_url = _pick(
+            data,
+            ("signed_url", "signedUrl", "url", "video_url", "videoUrl", "download_url", "downloadUrl"),
         )
-        operation = client.models.generate_videos(model="veo-3.1-generate-001", source=source, config=config)
-        while not operation.done:
-            time.sleep(10)
-            operation = client.operations.get(operation)
+        return gcs_uri, signed_url
 
-        response = operation.result
-        if not response or not response.generated_videos:
-            raise MediaGenerationError("Veo returned no videos")
+    def _parse_videofx_response(self, response: httpx.Response) -> dict | None:
+        content_type = response.headers.get("content-type", "")
+        text = response.text.strip()
 
-        video = response.generated_videos[0].video
-        gcs_uri = video.uri
-        signed_url = self.gcs.sign_gcs_uri(gcs_uri)
-        return {"gcs_uri": gcs_uri, "signed_url": signed_url}
+        if "application/json" in content_type:
+            try:
+                data = response.json()
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                # Common nesting patterns
+                for key in ("video", "data", "result", "payload", "output"):
+                    nested = data.get(key)
+                    if isinstance(nested, dict):
+                        gcs_uri, signed_url = self._extract_video_urls(nested)
+                        if gcs_uri or signed_url:
+                            if gcs_uri and not signed_url:
+                                signed_url = self.gcs.sign_gcs_uri(str(gcs_uri))
+                            return {"gcs_uri": gcs_uri, "signed_url": signed_url} if gcs_uri else {"signed_url": signed_url}
+
+                gcs_uri, signed_url = self._extract_video_urls(data)
+                if gcs_uri or signed_url:
+                    if gcs_uri and not signed_url:
+                        signed_url = self.gcs.sign_gcs_uri(str(gcs_uri))
+                    return {"gcs_uri": gcs_uri, "signed_url": signed_url} if gcs_uri else {"signed_url": signed_url}
+
+                # List-based response: outputs/videos/generated_videos
+                for key in ("outputs", "videos", "generated_videos"):
+                    items = data.get(key)
+                    if isinstance(items, list) and items:
+                        first = items[0]
+                        if isinstance(first, dict):
+                            gcs_uri, signed_url = self._extract_video_urls(first)
+                            if gcs_uri or signed_url:
+                                if gcs_uri and not signed_url:
+                                    signed_url = self.gcs.sign_gcs_uri(str(gcs_uri))
+                                return {"gcs_uri": gcs_uri, "signed_url": signed_url} if gcs_uri else {"signed_url": signed_url}
+
+        if text.startswith("gs://"):
+            return {"gcs_uri": text, "signed_url": self.gcs.sign_gcs_uri(text)}
+        if text.startswith("http://") or text.startswith("https://"):
+            return {"signed_url": text}
+        return None
+
+    def _videofx_request(
+        self,
+        *,
+        endpoint: str,
+        video_prompt: str,
+        options: VideoOptions,
+        use_alt_schema: bool = False,
+    ) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if settings.videofx_api_key:
+            headers["Authorization"] = f"Bearer {settings.videofx_api_key}"
+
+        if use_alt_schema:
+            payload: dict[str, object] = {
+                "textPrompt": video_prompt,
+                "durationSeconds": options.duration_seconds,
+                "resolution": options.resolution,
+                "fps": options.fps,
+                "format": options.format,
+            }
+        else:
+            payload = {
+                "prompt": video_prompt,
+                "duration_seconds": options.duration_seconds,
+                "resolution": options.resolution,
+                "fps": options.fps,
+                "format": options.format,
+            }
+        if settings.gcs_media_bucket:
+            if use_alt_schema:
+                payload["outputGcsUri"] = f"gs://{settings.gcs_media_bucket}/videos"
+            else:
+                payload["output_gcs_uri"] = f"gs://{settings.gcs_media_bucket}/videos"
+
+        with httpx.Client(timeout=settings.videofx_timeout_seconds) as client:
+            response = client.post(endpoint, headers=headers, json=payload)
+
+        if response.status_code in {400, 422} and not use_alt_schema:
+            return self._videofx_request(
+                endpoint=endpoint,
+                video_prompt=video_prompt,
+                options=options,
+                use_alt_schema=True,
+            )
+
+        if response.status_code >= 400:
+            raise MediaGenerationError(
+                f"VideoFX endpoint returned {response.status_code}",
+                details={"status_code": response.status_code, "body": response.text[:500]},
+                stage="rendering",
+            )
+
+        parsed = self._parse_videofx_response(response)
+        if parsed:
+            return parsed
+        raise MediaGenerationError("VideoFX response missing video URL", details={"body": response.text[:500]})
+
+    def _generate_video_sync(self, *, video_prompt: str, options: VideoOptions) -> dict:
+        endpoint = settings.videofx_endpoint
+        if not endpoint:
+            raise MediaGenerationError("VIDEOFX_ENDPOINT is required")
+        try:
+            return self._videofx_request(endpoint=str(endpoint), video_prompt=video_prompt, options=options)
+        except Exception as exc:
+            fallback_endpoint = settings.videofx_fallback_endpoint
+            if not fallback_endpoint:
+                raise
+            logger.warning("videofx_primary_failed_fallback", extra={"error": str(exc)})
+            fallback_options = VideoOptions(
+                duration_seconds=settings.videofx_fallback_duration_seconds,
+                resolution=settings.videofx_fallback_resolution,
+                fps=options.fps,
+                format=options.format,
+            )
+            return self._videofx_request(
+                endpoint=str(fallback_endpoint),
+                video_prompt=video_prompt,
+                options=fallback_options,
+            )
 
     async def generate_video(self, *, video_prompt: str, options: VideoOptions | None = None) -> dict:
         self._init_clients()
         set_stage("inference")
-        return await asyncio.to_thread(self._generate_video_sync, video_prompt=video_prompt)
+        resolved_options = options or VideoOptions()
+        return await asyncio.to_thread(self._generate_video_sync, video_prompt=video_prompt, options=resolved_options)
 
 
 engine = VertexMultimodalEngine()
@@ -406,12 +519,18 @@ async def stream_multimodal_events(
             if tracer:
                 with tracer.start_as_current_span("pipeline.video", attributes={"stage": "inference"}):
                     video_payload = await asyncio.wait_for(
-                        engine.generate_video(video_prompt=str(plan.get("video_prompt", validated_prompt))),
+                        engine.generate_video(
+                            video_prompt=str(plan.get("video_prompt", validated_prompt)),
+                            options=options,
+                        ),
                         timeout=settings.videofx_timeout_seconds + 10,
                     )
             else:
                 video_payload = await asyncio.wait_for(
-                    engine.generate_video(video_prompt=str(plan.get("video_prompt", validated_prompt))),
+                    engine.generate_video(
+                        video_prompt=str(plan.get("video_prompt", validated_prompt)),
+                        options=options,
+                    ),
                     timeout=settings.videofx_timeout_seconds + 10,
                 )
             yield _sse("video", session_type, video_payload)
