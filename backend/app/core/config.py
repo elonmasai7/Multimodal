@@ -13,10 +13,13 @@ class Settings(BaseSettings):
 
     gcp_project_id: str = ""
     gcp_region: str = "us-central1"
+    genai_use_vertexai: bool = True
+    gemini_api_key: str | None = None
     gcs_media_bucket: str = ""
     gcs_signed_url_ttl_seconds: int = 3600
     vertex_model_text: str = "gemini-2.5-pro"
     vertex_model_image: str = "imagen-3.0-generate-002"
+    vertex_model_video: str = "veo-3.1-generate-001"
     vertex_model_text_backup: str | None = None
     vertex_model_image_backup: str | None = None
 
@@ -56,6 +59,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "firebase_credentials_path",
+        "gemini_api_key",
         "videofx_endpoint",
         "videofx_api_key",
         "videofx_fallback_endpoint",

@@ -14,6 +14,8 @@
   --radius-xl: 1rem;
   --radius-2xl: 1.25rem;
   --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 40px 90px rgba(18, 48, 89, 0.45);
+  --font-body: "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --font-display: "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
 }
 
 [data-theme="story"] {

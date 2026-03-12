@@ -25,17 +25,14 @@ from app.core.observability import get_tracer
 from app.core.retry import retry_async, retry_sync
 from app.core.validation import fallback_resolutions, validate_prompt, validate_resolution
 from app.models.schemas import VideoOptions
+from app.services.genai_client import get_genai_client
 from app.services.gcs_media import GCSMediaService
 from app.services.redis_state import RedisStateManager
 
 try:
-    import vertexai
-    from vertexai.generative_models import GenerativeModel
-    from vertexai.preview.vision_models import ImageGenerationModel
+    from google.genai import types as genai_types
 except Exception:
-    vertexai = None
-    GenerativeModel = None
-    ImageGenerationModel = None
+    genai_types = None
 
 try:
     from google.cloud import texttospeech
@@ -85,33 +82,29 @@ def _is_gpu_error(exc: Exception) -> bool:
     return any(marker.lower() in message.lower() for marker in GPU_ERROR_MARKERS)
 
 
-class VertexMultimodalEngine:
+class GenAIMultimodalEngine:
     def __init__(self) -> None:
         self._ready = False
         self.gcs: GCSMediaService | None = None
-        self.text_model_backup = None
-        self.image_model_backup = None
+        self.text_model_backup: str | None = None
+        self.image_model_backup: str | None = None
+        self.genai = None
 
     def _init_clients(self) -> None:
         if self._ready:
             return
 
-        if not settings.gcp_project_id:
-            raise AIIntegrationError("GCP_PROJECT_ID is required")
+        if genai_types is None:
+            raise AIIntegrationError("Google GenAI SDK not installed correctly")
         if not settings.gcs_media_bucket:
             raise MediaGenerationError("GCS_MEDIA_BUCKET is required")
-        if not settings.videofx_endpoint:
-            raise MediaGenerationError("VIDEOFX_ENDPOINT is required")
-        if vertexai is None or GenerativeModel is None or ImageGenerationModel is None:
-            raise AIIntegrationError("Vertex AI SDK not installed correctly")
-
-        vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
-        self.text_model = GenerativeModel(settings.vertex_model_text)
-        self.image_model = ImageGenerationModel.from_pretrained(settings.vertex_model_image)
+        self.genai = get_genai_client()
+        self.text_model = settings.vertex_model_text
+        self.image_model = settings.vertex_model_image
         if settings.vertex_model_text_backup:
-            self.text_model_backup = GenerativeModel(settings.vertex_model_text_backup)
+            self.text_model_backup = settings.vertex_model_text_backup
         if settings.vertex_model_image_backup:
-            self.image_model_backup = ImageGenerationModel.from_pretrained(settings.vertex_model_image_backup)
+            self.image_model_backup = settings.vertex_model_image_backup
         self.tts_client = texttospeech.TextToSpeechClient() if texttospeech else None
         self.gcs = GCSMediaService()
         self._ready = True
@@ -125,9 +118,13 @@ class VertexMultimodalEngine:
         )
         set_stage("inference")
 
-        def _call(model) -> dict:
-            response = model.generate_content(instruction)
-            text = getattr(response, "text", "")
+        def _call(model_name: str) -> dict:
+            response = self.genai.models.generate_content(
+                model=model_name,
+                contents=instruction,
+                config=genai_types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            text = getattr(response, "text", "") or ""
             if not text:
                 raise AIIntegrationError("Gemini returned empty content")
             try:
@@ -158,9 +155,9 @@ class VertexMultimodalEngine:
                 },
             }
 
-        def _run_with_model(model) -> dict:
+        def _run_with_model(model_name: str) -> dict:
             return retry_sync(
-                lambda: _call(model),
+                lambda: _call(model_name),
                 attempts=settings.retry_max_attempts,
                 base_delay=settings.retry_base_delay_seconds,
                 max_delay=settings.retry_max_delay_seconds,
@@ -178,14 +175,40 @@ class VertexMultimodalEngine:
                 raise ModelInferenceError(str(exc), safe_message="GPU memory exhausted during inference") from exc
             raise ModelInferenceError(str(exc)) from exc
 
+    def _extract_image_from_response(self, response: object) -> object | None:
+        parts = getattr(response, "parts", None)
+        if not parts:
+            candidates = getattr(response, "candidates", None)
+            if candidates:
+                content = getattr(candidates[0], "content", None)
+                parts = getattr(content, "parts", None) if content else None
+        if not parts:
+            return None
+        for part in parts:
+            if getattr(part, "inline_data", None):
+                try:
+                    return part.as_image()
+                except Exception:
+                    return None
+        return None
+
     def generate_image(self, image_prompt: str) -> dict:
         self._init_clients()
         set_stage("rendering")
         filename = f"/tmp/{uuid.uuid4()}.png"
         try:
-            images = self.image_model.generate_images(prompt=image_prompt, number_of_images=1)
-            image = images[0]
-            image.save(location=filename)
+            response = self.genai.models.generate_content(
+                model=self.image_model,
+                contents=image_prompt,
+                config=genai_types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    image_config=genai_types.ImageConfig(aspect_ratio="16:9"),
+                ),
+            )
+            image = self._extract_image_from_response(response)
+            if image is None:
+                raise MediaGenerationError("Image response missing inline data")
+            image.save(filename)
 
             uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
             return {
@@ -198,9 +221,18 @@ class VertexMultimodalEngine:
         except Exception as exc:
             if self.image_model_backup is not None:
                 logger.warning("primary_image_model_failed_fallback", extra={"error": str(exc)})
-                images = self.image_model_backup.generate_images(prompt=image_prompt, number_of_images=1)
-                image = images[0]
-                image.save(location=filename)
+                response = self.genai.models.generate_content(
+                    model=self.image_model_backup,
+                    contents=image_prompt,
+                    config=genai_types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=genai_types.ImageConfig(aspect_ratio="16:9"),
+                    ),
+                )
+                image = self._extract_image_from_response(response)
+                if image is None:
+                    raise MediaGenerationError("Image response missing inline data")
+                image.save(filename)
                 uploaded = self.gcs.upload_file_and_sign(local_path=filename, prefix="images", content_type="image/png")
                 return {
                     "gcs_uri": uploaded.gcs_uri,
@@ -359,28 +391,72 @@ class VertexMultimodalEngine:
             return parsed
         raise MediaGenerationError("VideoFX response missing video URL", details={"body": response.text[:500]})
 
+    def _aspect_ratio(self, resolution: str) -> str:
+        width, _, height = resolution.partition("x")
+        try:
+            w = int(width)
+            h = int(height)
+        except ValueError:
+            return "16:9"
+        if w == 0 or h == 0:
+            return "16:9"
+        return "16:9" if w >= h else "9:16"
+
+    def _generate_video_genai(self, *, video_prompt: str, options: VideoOptions) -> dict:
+        import time
+
+        if not settings.gcs_media_bucket:
+            raise MediaGenerationError("GCS_MEDIA_BUCKET is required for video output")
+
+        config = genai_types.GenerateVideosConfig(
+            number_of_videos=1,
+            duration_seconds=options.duration_seconds,
+            aspect_ratio=self._aspect_ratio(options.resolution),
+            output_gcs_uri=f"gs://{settings.gcs_media_bucket}/videos",
+        )
+        operation = self.genai.models.generate_videos(
+            model=settings.vertex_model_video,
+            prompt=video_prompt,
+            config=config,
+        )
+        while not operation.done:
+            time.sleep(10)
+            operation = self.genai.operations.get(operation)
+
+        response = getattr(operation, "response", None) or getattr(operation, "result", None)
+        generated = getattr(response, "generated_videos", None)
+        if not generated:
+            raise MediaGenerationError("GenAI video generation returned no videos")
+
+        video = generated[0].video
+        gcs_uri = video.uri
+        signed_url = self.gcs.sign_gcs_uri(gcs_uri)
+        return {"gcs_uri": gcs_uri, "signed_url": signed_url}
+
     def _generate_video_sync(self, *, video_prompt: str, options: VideoOptions) -> dict:
         endpoint = settings.videofx_endpoint
-        if not endpoint:
-            raise MediaGenerationError("VIDEOFX_ENDPOINT is required")
-        try:
-            return self._videofx_request(endpoint=str(endpoint), video_prompt=video_prompt, options=options)
-        except Exception as exc:
-            fallback_endpoint = settings.videofx_fallback_endpoint
-            if not fallback_endpoint:
-                raise
-            logger.warning("videofx_primary_failed_fallback", extra={"error": str(exc)})
-            fallback_options = VideoOptions(
-                duration_seconds=settings.videofx_fallback_duration_seconds,
-                resolution=settings.videofx_fallback_resolution,
-                fps=options.fps,
-                format=options.format,
-            )
-            return self._videofx_request(
-                endpoint=str(fallback_endpoint),
-                video_prompt=video_prompt,
-                options=fallback_options,
-            )
+        if endpoint:
+            try:
+                return self._videofx_request(endpoint=str(endpoint), video_prompt=video_prompt, options=options)
+            except Exception as exc:
+                fallback_endpoint = settings.videofx_fallback_endpoint
+                if fallback_endpoint:
+                    logger.warning("videofx_primary_failed_fallback", extra={"error": str(exc)})
+                    fallback_options = VideoOptions(
+                        duration_seconds=settings.videofx_fallback_duration_seconds,
+                        resolution=settings.videofx_fallback_resolution,
+                        fps=options.fps,
+                        format=options.format,
+                    )
+                    return self._videofx_request(
+                        endpoint=str(fallback_endpoint),
+                        video_prompt=video_prompt,
+                        options=fallback_options,
+                    )
+                logger.warning("videofx_primary_failed_genai_fallback", extra={"error": str(exc)})
+                return self._generate_video_genai(video_prompt=video_prompt, options=options)
+
+        return self._generate_video_genai(video_prompt=video_prompt, options=options)
 
     async def generate_video(self, *, video_prompt: str, options: VideoOptions | None = None) -> dict:
         self._init_clients()
@@ -389,7 +465,7 @@ class VertexMultimodalEngine:
         return await asyncio.to_thread(self._generate_video_sync, video_prompt=video_prompt, options=resolved_options)
 
 
-engine = VertexMultimodalEngine()
+engine = GenAIMultimodalEngine()
 redis_state = RedisStateManager()
 
 
@@ -439,6 +515,7 @@ async def stream_multimodal_events(
 
     start = datetime.now(UTC)
     try:
+        logger.info("pipeline_started", extra={"session_type": session_type, "request_id": request_id or ""})
         yield _sse("status", session_type, {"message": "Generating structured lesson plan with Gemini"})
         async def _run_plan():
             try:
@@ -482,6 +559,7 @@ async def stream_multimodal_events(
         }
         yield _sse("text", session_type, text_payload)
 
+        logger.info("pipeline_stage", extra={"stage": "image", "session_type": session_type, "request_id": request_id or ""})
         yield _sse("status", session_type, {"message": "Generating image with Imagen"})
         async def _run_image():
             try:
@@ -513,30 +591,46 @@ async def stream_multimodal_events(
             )
         yield _sse("image", session_type, image_payload)
 
+        logger.info("pipeline_stage", extra={"stage": "video", "session_type": session_type, "request_id": request_id or ""})
         yield _sse("status", session_type, {"message": "Generating video with Veo"})
         video_payload = None
         try:
-            if tracer:
-                with tracer.start_as_current_span("pipeline.video", attributes={"stage": "inference"}):
-                    video_payload = await asyncio.wait_for(
+            async def _run_video():
+                try:
+                    return await asyncio.wait_for(
                         engine.generate_video(
                             video_prompt=str(plan.get("video_prompt", validated_prompt)),
                             options=options,
                         ),
                         timeout=settings.videofx_timeout_seconds + 10,
                     )
+                except asyncio.TimeoutError as exc:
+                    raise TimeoutError("Video generation timed out", stage="rendering") from exc
+
+            if tracer:
+                with tracer.start_as_current_span("pipeline.video", attributes={"stage": "inference"}):
+                    video_payload = await retry_async(
+                        _run_video,
+                        attempts=settings.retry_max_attempts,
+                        base_delay=settings.retry_base_delay_seconds,
+                        max_delay=settings.retry_max_delay_seconds,
+                        stage="rendering",
+                        retry_on=(TimeoutError, MediaGenerationError, ExternalServiceError),
+                    )
             else:
-                video_payload = await asyncio.wait_for(
-                    engine.generate_video(
-                        video_prompt=str(plan.get("video_prompt", validated_prompt)),
-                        options=options,
-                    ),
-                    timeout=settings.videofx_timeout_seconds + 10,
+                video_payload = await retry_async(
+                    _run_video,
+                    attempts=settings.retry_max_attempts,
+                    base_delay=settings.retry_base_delay_seconds,
+                    max_delay=settings.retry_max_delay_seconds,
+                    stage="rendering",
+                    retry_on=(TimeoutError, MediaGenerationError, ExternalServiceError),
                 )
             yield _sse("video", session_type, video_payload)
         except Exception as video_exc:
             logger.warning("video_generation_skipped", extra={"reason": str(video_exc)})
 
+        logger.info("pipeline_stage", extra={"stage": "audio", "session_type": session_type, "request_id": request_id or ""})
         yield _sse("status", session_type, {"message": "Generating narration audio"})
         async def _run_audio():
             try:

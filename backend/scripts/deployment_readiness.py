@@ -38,18 +38,22 @@ def check_required_env() -> CheckResult:
     required = [
         "POSTGRES_URL",
         "REDIS_URL",
-        "GCP_PROJECT_ID",
-        "GCP_REGION",
         "GCS_MEDIA_BUCKET",
         "VERTEX_MODEL_TEXT",
         "VERTEX_MODEL_IMAGE",
-        "VIDEOFX_ENDPOINT",
         "FIREBASE_PROJECT_ID",
         "FIREBASE_WEB_API_KEY",
     ]
+    if settings.genai_use_vertexai:
+        required.extend(["GCP_PROJECT_ID", "GCP_REGION"])
+    else:
+        if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            required.append("GEMINI_API_KEY")
     missing = [key for key in required if not os.getenv(key)]
     if missing:
         return _fail("env", "Missing required environment variables", missing=missing)
+    if not os.getenv("VIDEOFX_ENDPOINT"):
+        return _warn("env", "VIDEOFX_ENDPOINT not set; video generation will use GenAI fallback only")
     return _ok("env", "Required environment variables present")
 
 
@@ -150,24 +154,38 @@ def check_gcs_and_iam() -> list[CheckResult]:
 
 def check_vertex() -> CheckResult:
     try:
-        import vertexai
-        from vertexai.generative_models import GenerativeModel
+        from app.services.genai_client import get_genai_client
 
-        vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
-        model = GenerativeModel(settings.vertex_model_text)
-        token_info = model.count_tokens("readiness-check")
-        return _ok("vertex", "Vertex Gemini reachable", total_tokens=int(getattr(token_info, "total_tokens", 0)))
+        client = get_genai_client()
+        token_info = client.models.count_tokens(model=settings.vertex_model_text, contents="readiness-check")
+        return _ok("genai", "GenAI text model reachable", total_tokens=int(getattr(token_info, "total_tokens", 0)))
     except Exception as exc:
-        return _fail("vertex", "Vertex/Gemini check failed", error=str(exc))
+        return _fail("genai", "GenAI text model check failed", error=str(exc))
 
 
 def check_imagen() -> CheckResult:
     try:
-        import vertexai
-        from vertexai.preview.vision_models import ImageGenerationModel
+        from google.genai import types as genai_types
 
-        vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
-        ImageGenerationModel.from_pretrained(settings.vertex_model_image)
+        from app.services.genai_client import get_genai_client
+
+        client = get_genai_client()
+        response = client.models.generate_content(
+            model=settings.vertex_model_image,
+            contents="A minimal line drawing of a rocket.",
+            config=genai_types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+                image_config=genai_types.ImageConfig(aspect_ratio="16:9"),
+            ),
+        )
+        parts = getattr(response, "parts", None)
+        if not parts:
+            candidates = getattr(response, "candidates", None)
+            if candidates:
+                content = getattr(candidates[0], "content", None)
+                parts = getattr(content, "parts", None) if content else None
+        if not parts:
+            return _fail("imagen", "Imagen response missing inline data")
         return _ok("imagen", "Imagen model accessible", model=settings.vertex_model_image)
     except Exception as exc:
         return _fail("imagen", "Imagen model check failed", error=str(exc))
