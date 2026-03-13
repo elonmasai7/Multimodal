@@ -118,6 +118,13 @@ export async function getLessonProgress(token: string, lessonId: string) {
   return parseResponse(res);
 }
 
+export async function getStorySessions(token: string) {
+  const res = await fetch(`${API_BASE}/story/sessions`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return parseResponse(res);
+}
+
 export async function getLessonSessions(token: string) {
   const res = await fetch(`${API_BASE}/lesson/sessions`, {
     headers: { Authorization: `Bearer ${token}` }

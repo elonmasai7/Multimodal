@@ -53,6 +53,21 @@ class FirestoreRepository:
         history.append({"scene_id": scene_id, "choice_text": choice_text, "timestamp": datetime.now(UTC).isoformat()})
         await doc.update({"history": history, "current_scene": next_scene, "updated_at": datetime.now(UTC)})
 
+    async def list_story_sessions(self, *, user_id: str, limit: int = 50) -> list[dict]:
+        self._ensure_ready()
+        query = (
+            self.client.collection("story_sessions")
+            .where("user_id", "==", user_id)
+            .order_by("created_at", direction="DESCENDING")
+            .limit(limit)
+        )
+        results = []
+        async for snap in query.stream():
+            data = snap.to_dict() or {}
+            data["session_id"] = snap.id
+            results.append(data)
+        return results
+
     async def create_lesson_session(self, *, user_id: str, lesson_id: str, prompt: str, duration: int) -> None:
         self._ensure_ready()
         doc = self.client.collection("lesson_sessions").document(lesson_id)

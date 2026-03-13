@@ -82,6 +82,22 @@ async def story_stream(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@router.get("/sessions")
+async def list_story_sessions(user: AuthUser = Depends(get_current_user)) -> dict:
+    sessions = await firestore_repo.list_story_sessions(user_id=user.uid)
+    serialized = []
+    for s in sessions:
+        created = s.get("created_at")
+        serialized.append({
+            "session_id": s.get("session_id"),
+            "prompt": s.get("prompt", ""),
+            "choices_made": len(s.get("history", [])),
+            "current_scene": s.get("current_scene", "scene_01"),
+            "created_at": created.isoformat() if hasattr(created, "isoformat") else str(created),
+        })
+    return {"status": "ok", "data": serialized}
+
+
 @router.post("/choice")
 async def submit_choice(req: ChoiceRequest, user: AuthUser = Depends(get_current_user)) -> dict:
     session = await firestore_repo.get_story_session(session_id=req.session_id)
