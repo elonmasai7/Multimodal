@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     gcs_media_bucket: str = ""
     gcs_signed_url_ttl_seconds: int = 3600
     vertex_model_text: str = "gemini-2.5-pro"
+    vertex_model_interleaved: str = "gemini-2.0-flash-exp"
     vertex_model_image: str = "imagen-3.0-generate-002"
     vertex_model_video: str = "veo-3.1-generate-001"
     vertex_model_text_backup: str | None = None

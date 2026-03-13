@@ -118,6 +118,13 @@ export async function getLessonProgress(token: string, lessonId: string) {
   return parseResponse(res);
 }
 
+export async function getLessonSessions(token: string) {
+  const res = await fetch(`${API_BASE}/lesson/sessions`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return parseResponse(res);
+}
+
 export async function getStudentProgressAnalytics(token: string, userId?: string) {
   const query = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
   const res = await fetch(`${API_BASE}/analytics/student-progress${query}`, {

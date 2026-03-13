@@ -74,6 +74,21 @@ class FirestoreRepository:
             return None
         return snap.to_dict()
 
+    async def list_lesson_sessions(self, *, user_id: str, limit: int = 50) -> list[dict]:
+        self._ensure_ready()
+        query = (
+            self.client.collection("lesson_sessions")
+            .where("user_id", "==", user_id)
+            .order_by("created_at", direction="DESCENDING")
+            .limit(limit)
+        )
+        results = []
+        async for snap in query.stream():
+            data = snap.to_dict() or {}
+            data["lesson_id"] = snap.id
+            results.append(data)
+        return results
+
     async def append_quiz_attempt(
         self,
         *,

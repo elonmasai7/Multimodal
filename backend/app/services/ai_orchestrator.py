@@ -109,6 +109,127 @@ class GenAIMultimodalEngine:
         self.gcs = GCSMediaService()
         self._ready = True
 
+    def generate_interleaved_content(self, *, prompt: str, session_type: str) -> dict:
+        """
+        Single Gemini call with response_modalities=["TEXT","IMAGE"] that produces
+        a fluid mix of narration paragraphs and inline diagrams — the core of the
+        interleaved multimodal pipeline described in the challenge brief.
+
+        Returns:
+            {
+                "parts": [{"type": "text"|"image", ...}, ...],
+                "title": str,
+                "narration": str,   # full text for TTS
+                "video_prompt": str,
+                "quiz": {...},
+            }
+        """
+        import base64
+
+        self._init_clients()
+        set_stage("inference")
+
+        instruction = (
+            f"You are a creative director producing an immersive {session_type} experience.\n"
+            f"Topic: {prompt}\n\n"
+            "Generate a rich, flowing educational narrative that INTERLEAVES explanatory text "
+            "paragraphs with relevant diagrams and illustrations. After every 1-2 paragraphs, "
+            "generate an inline illustration that visually supports what was just described.\n\n"
+            "At the very end of your response, output ONLY the following JSON block on its own "
+            "line (no markdown, no extra text before or after it):\n"
+            '{"title":"...","narration":"...one paragraph for TTS...","video_prompt":"...one cinematic sentence...","quiz":{"id":"q1","question":"...","options":["A","B","C","D"],"correct":"B"}}'
+        )
+
+        response = self.genai.models.generate_content(
+            model=settings.vertex_model_interleaved,
+            contents=instruction,
+            config=genai_types.GenerateContentConfig(
+                response_modalities=["TEXT", "IMAGE"],
+            ),
+        )
+
+        parts: list[dict] = []
+        raw_text_accumulator = ""
+        metadata: dict = {}
+
+        candidates = getattr(response, "candidates", None) or []
+        response_parts = []
+        if candidates:
+            content = getattr(candidates[0], "content", None)
+            response_parts = getattr(content, "parts", None) or []
+
+        for rp in response_parts:
+            text = getattr(rp, "text", None)
+            inline_data = getattr(rp, "inline_data", None)
+
+            if text:
+                raw_text_accumulator += text
+                # Detect the trailing JSON metadata block
+                stripped = text.strip()
+                if stripped.startswith("{") and "narration" in stripped:
+                    try:
+                        metadata = json.loads(stripped)
+                        continue  # don't add metadata JSON as a visible content part
+                    except json.JSONDecodeError:
+                        pass
+                if stripped:
+                    parts.append({"type": "text", "content": stripped})
+
+            elif inline_data:
+                mime = getattr(inline_data, "mime_type", None) or "image/png"
+                raw = getattr(inline_data, "data", None)
+                if raw:
+                    try:
+                        img_bytes = base64.b64decode(raw) if isinstance(raw, str) else bytes(raw)
+                        uploaded = self.gcs.upload_bytes_and_sign(
+                            data=img_bytes,
+                            prefix="interleaved",
+                            content_type=mime,
+                        )
+                        parts.append({
+                            "type": "image",
+                            "gcs_uri": uploaded.gcs_uri,
+                            "signed_url": uploaded.signed_url,
+                        })
+                    except Exception as exc:
+                        logger.warning("inline_image_upload_failed", extra={"error": str(exc)})
+
+        # Fallback: if the model returned only text (no inline images), extract metadata
+        # from the accumulated text and synthesise a minimal parts list
+        if not metadata and raw_text_accumulator:
+            acc = raw_text_accumulator.strip()
+            # Try to extract trailing JSON
+            brace_idx = acc.rfind("{")
+            if brace_idx != -1:
+                try:
+                    metadata = json.loads(acc[brace_idx:])
+                    # Remove metadata JSON from visible parts
+                    parts = [p for p in parts if not (p["type"] == "text" and p["content"].strip().startswith("{"))]
+                except json.JSONDecodeError:
+                    pass
+
+        title = metadata.get("title") or f"{session_type.title()} — {prompt[:60]}"
+        narration = metadata.get("narration") or raw_text_accumulator[:2000]
+        video_prompt = metadata.get("video_prompt") or f"Cinematic visual explainer about {prompt}"
+        quiz = metadata.get("quiz") or {
+            "id": "q1",
+            "question": "What is the key concept covered?",
+            "options": ["Option A", "Option B", "Option C", "Option D"],
+            "correct": "B",
+        }
+
+        # If no parts were produced at all (model returned nothing), fall back to plain text
+        if not parts:
+            parts = [{"type": "text", "content": narration}]
+
+        return {
+            "parts": parts,
+            "title": title,
+            "narration": narration,
+            "video_prompt": video_prompt,
+            "quiz": quiz,
+        }
+
     def generate_lesson_plan(self, prompt: str, session_type: str) -> dict:
         self._init_clients()
         instruction = (
@@ -550,142 +671,81 @@ async def stream_multimodal_events(
     start = datetime.now(UTC)
     try:
         logger.info("pipeline_started", extra={"session_type": session_type, "request_id": request_id or ""})
-        yield _sse("status", session_type, {"message": "Generating structured lesson plan with Gemini"})
-        async def _run_plan():
+
+        # ── Step 1: Single Gemini interleaved call ────────────────────────────
+        # One model invocation produces the full narrative: text paragraphs and
+        # inline diagrams woven together, plus narration / video_prompt / quiz.
+        yield _sse("status", session_type, {"message": "Weaving text and visuals with Gemini…"})
+
+        async def _run_interleaved():
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(engine.generate_lesson_plan, validated_prompt, session_type),
+                    asyncio.to_thread(
+                        engine.generate_interleaved_content,
+                        prompt=validated_prompt,
+                        session_type=session_type,
+                    ),
                     timeout=settings.model_inference_timeout_seconds,
                 )
             except asyncio.TimeoutError as exc:
-                raise TimeoutError("Text model timed out", stage="inference") from exc
+                raise TimeoutError("Interleaved generation timed out", stage="inference") from exc
 
-        if tracer:
-            with tracer.start_as_current_span("pipeline.text", attributes={"stage": "inference"}):
-                plan = await retry_async(
-                    _run_plan,
-                    attempts=settings.retry_max_attempts,
-                    base_delay=settings.retry_base_delay_seconds,
-                    max_delay=settings.retry_max_delay_seconds,
-                    stage="inference",
-                    retry_on=(TimeoutError, ModelInferenceError, AIIntegrationError),
-                )
-        else:
-            plan = await retry_async(
-                _run_plan,
-                attempts=settings.retry_max_attempts,
-                base_delay=settings.retry_base_delay_seconds,
-                max_delay=settings.retry_max_delay_seconds,
-                stage="inference",
-                retry_on=(TimeoutError, ModelInferenceError, AIIntegrationError),
-            )
+        interleaved = await retry_async(
+            _run_interleaved,
+            attempts=settings.retry_max_attempts,
+            base_delay=settings.retry_base_delay_seconds,
+            max_delay=settings.retry_max_delay_seconds,
+            stage="inference",
+            retry_on=(TimeoutError, ModelInferenceError, AIIntegrationError),
+        )
 
-        narration = str(plan.get("narration", ""))
-        title = str(plan.get("title", f"{session_type.title()} Session"))
-        for chunk in [title, *[s.strip() for s in narration.split(".") if s.strip()]]:
-            yield _sse("narration", session_type, {"content": chunk})
-            await asyncio.sleep(0.05)
+        title = interleaved["title"]
+        narration = interleaved["narration"]
+        video_prompt_text = interleaved["video_prompt"]
+        quiz_payload = interleaved["quiz"]
 
-        text_payload = {
-            "title": title,
-            "content": narration,
-            "sections": plan.get("sections", []),
-        }
+        # ── Step 2: Stream interleaved parts as they were produced ────────────
+        # Each part is either {"type":"text","content":"..."} or
+        # {"type":"image","signed_url":"...","gcs_uri":"..."}.
+        # Streaming them in order gives the "creative director" interleaved flow.
+        image_payload = None
+        text_payload = {"title": title, "content": narration, "sections": []}
+
         yield _sse("text", session_type, text_payload)
 
-        logger.info("pipeline_stage", extra={"stage": "image", "session_type": session_type, "request_id": request_id or ""})
-        yield _sse("status", session_type, {"message": "Generating image with Imagen"})
-        async def _run_image():
-            try:
-                return await asyncio.wait_for(
-                    asyncio.to_thread(engine.generate_image, str(plan.get("image_prompt", validated_prompt))),
-                    timeout=settings.media_generation_timeout_seconds,
-                )
-            except asyncio.TimeoutError as exc:
-                raise TimeoutError("Image generation timed out", stage="rendering") from exc
+        for part in interleaved["parts"]:
+            if part["type"] == "text":
+                yield _sse("narration", session_type, {"content": part["content"]})
+            elif part["type"] == "image":
+                img_evt = {"signed_url": part["signed_url"], "gcs_uri": part["gcs_uri"], "caption": ""}
+                if image_payload is None:
+                    image_payload = img_evt  # keep first image for cache
+                yield _sse("image", session_type, img_evt)
+            await asyncio.sleep(0.04)
 
-        if tracer:
-            with tracer.start_as_current_span("pipeline.image", attributes={"stage": "rendering"}):
-                image_payload = await retry_async(
-                    _run_image,
-                    attempts=settings.retry_max_attempts,
-                    base_delay=settings.retry_base_delay_seconds,
-                    max_delay=settings.retry_max_delay_seconds,
-                    stage="rendering",
-                    retry_on=(TimeoutError, MediaGenerationError, StorageError),
-                )
-        else:
-            image_payload = await retry_async(
-                _run_image,
-                attempts=settings.retry_max_attempts,
-                base_delay=settings.retry_base_delay_seconds,
-                max_delay=settings.retry_max_delay_seconds,
-                stage="rendering",
-                retry_on=(TimeoutError, MediaGenerationError, StorageError),
-            )
-        yield _sse("image", session_type, image_payload)
-
+        # ── Step 3: Launch Veo video concurrently while TTS runs ─────────────
         logger.info("pipeline_stage", extra={"stage": "video", "session_type": session_type, "request_id": request_id or ""})
-        yield _sse("status", session_type, {"message": "Generating video with Veo"})
-        video_payload = None
+        yield _sse("status", session_type, {"message": "Generating Veo video…"})
+
+        video_task = asyncio.create_task(
+            engine.generate_video(video_prompt=video_prompt_text, options=options)
+        )
+
+        # ── Step 4: TTS narration audio ──────────────────────────────────────
+        logger.info("pipeline_stage", extra={"stage": "audio", "session_type": session_type, "request_id": request_id or ""})
+        yield _sse("status", session_type, {"message": "Generating narration audio…"})
+
+        audio_payload = None
         try:
-            async def _run_video():
+            async def _run_audio():
                 try:
                     return await asyncio.wait_for(
-                        engine.generate_video(
-                            video_prompt=str(plan.get("video_prompt", validated_prompt)),
-                            options=options,
-                        ),
-                        timeout=settings.videofx_timeout_seconds + 10,
+                        asyncio.to_thread(engine.synthesize_audio, narration),
+                        timeout=settings.media_generation_timeout_seconds,
                     )
                 except asyncio.TimeoutError as exc:
-                    raise TimeoutError("Video generation timed out", stage="rendering") from exc
+                    raise TimeoutError("Audio generation timed out", stage="rendering") from exc
 
-            if tracer:
-                with tracer.start_as_current_span("pipeline.video", attributes={"stage": "inference"}):
-                    video_payload = await retry_async(
-                        _run_video,
-                        attempts=settings.retry_max_attempts,
-                        base_delay=settings.retry_base_delay_seconds,
-                        max_delay=settings.retry_max_delay_seconds,
-                        stage="rendering",
-                        retry_on=(TimeoutError, MediaGenerationError, ExternalServiceError),
-                    )
-            else:
-                video_payload = await retry_async(
-                    _run_video,
-                    attempts=settings.retry_max_attempts,
-                    base_delay=settings.retry_base_delay_seconds,
-                    max_delay=settings.retry_max_delay_seconds,
-                    stage="rendering",
-                    retry_on=(TimeoutError, MediaGenerationError, ExternalServiceError),
-                )
-            yield _sse("video", session_type, video_payload)
-        except Exception as video_exc:
-            logger.warning("video_generation_skipped", extra={"reason": str(video_exc)})
-
-        logger.info("pipeline_stage", extra={"stage": "audio", "session_type": session_type, "request_id": request_id or ""})
-        yield _sse("status", session_type, {"message": "Generating narration audio"})
-        async def _run_audio():
-            try:
-                return await asyncio.wait_for(
-                    asyncio.to_thread(engine.synthesize_audio, narration),
-                    timeout=settings.media_generation_timeout_seconds,
-                )
-            except asyncio.TimeoutError as exc:
-                raise TimeoutError("Audio generation timed out", stage="rendering") from exc
-
-        if tracer:
-            with tracer.start_as_current_span("pipeline.audio", attributes={"stage": "rendering"}):
-                audio_payload = await retry_async(
-                    _run_audio,
-                    attempts=settings.retry_max_attempts,
-                    base_delay=settings.retry_base_delay_seconds,
-                    max_delay=settings.retry_max_delay_seconds,
-                    stage="rendering",
-                    retry_on=(TimeoutError, MediaGenerationError, StorageError),
-                )
-        else:
             audio_payload = await retry_async(
                 _run_audio,
                 attempts=settings.retry_max_attempts,
@@ -694,14 +754,19 @@ async def stream_multimodal_events(
                 stage="rendering",
                 retry_on=(TimeoutError, MediaGenerationError, StorageError),
             )
-        yield _sse("audio", session_type, audio_payload)
+            yield _sse("audio", session_type, audio_payload)
+        except Exception as audio_exc:
+            logger.warning("audio_generation_skipped", extra={"reason": str(audio_exc)})
 
-        quiz_payload = plan.get("quiz", {
-            "id": "q1",
-            "question": "Select the best summary",
-            "options": ["A", "B", "C", "D"],
-            "correct": "B",
-        })
+        # ── Step 5: Await video result ────────────────────────────────────────
+        video_payload = None
+        try:
+            video_payload = await video_task
+            yield _sse("video", session_type, video_payload)
+        except Exception as video_exc:
+            logger.warning("video_generation_skipped", extra={"reason": str(video_exc)})
+
+        # ── Step 6: Quiz ──────────────────────────────────────────────────────
         yield _sse("quiz", session_type, quiz_payload)
 
         await redis_state.set_ai_cache(

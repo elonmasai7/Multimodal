@@ -109,6 +109,22 @@ async def lesson_stream(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@router.get("/sessions")
+async def list_lesson_sessions(user: AuthUser = Depends(get_current_user)) -> dict:
+    sessions = await firestore_repo.list_lesson_sessions(user_id=user.uid)
+    serialized = []
+    for s in sessions:
+        created = s.get("created_at")
+        serialized.append({
+            "lesson_id": s.get("lesson_id"),
+            "prompt": s.get("prompt", ""),
+            "duration": s.get("duration"),
+            "quiz_attempts": len(s.get("quiz_attempts", [])),
+            "created_at": created.isoformat() if hasattr(created, "isoformat") else str(created),
+        })
+    return {"status": "ok", "data": serialized}
+
+
 @router.get("/{lesson_id}")
 async def get_lesson(lesson_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
     lesson = await firestore_repo.get_lesson_session(lesson_id=lesson_id)
