@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.crud_progress import create_quiz_attempt, get_progress, upsert_progress
+from app.db.crud_progress import create_quiz_attempt, get_progress, update_watch_time, upsert_progress
 from app.db.session import get_db_session
 from app.deps.auth import AuthUser, get_current_user, get_token_from_request, verify_token
-from app.models.schemas import CreateSessionRequest, QuizSubmitRequest, VideoOptions
+from app.models.schemas import CreateSessionRequest, QuizSubmitRequest, VideoOptions, WatchProgressRequest
 from app.services.ai_orchestrator import new_session_id, stream_multimodal_events
 from app.services.firestore_repo import FirestoreRepository
 from app.services.redis_state import RedisStateManager
@@ -204,6 +204,29 @@ async def submit_quiz(
             "expected": expected,
             "correct": correct,
             "score": row.score,
+            "completion": row.completion,
+        },
+    }
+
+
+@router.post("/progress/watch")
+async def record_watch_progress(
+    req: WatchProgressRequest,
+    user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    row = await update_watch_time(
+        db,
+        user_id=user.uid,
+        lesson_id=req.lesson_id,
+        watched_seconds=req.watched_seconds,
+        duration_seconds=req.video_duration_seconds,
+    )
+    return {
+        "status": "ok",
+        "data": {
+            "lesson_id": req.lesson_id,
+            "time_spent_seconds": row.time_spent_seconds,
             "completion": row.completion,
         },
     }

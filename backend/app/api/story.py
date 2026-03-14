@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.deps.auth import AuthUser, get_current_user, get_token_from_request, verify_token
-from app.models.schemas import ChoiceRequest, CreateSessionRequest, VideoOptions
+from app.models.schemas import ChoiceRequest, CreateSessionRequest, SaveStoryPagesRequest, VideoOptions
 from app.services.ai_orchestrator import new_session_id, stream_multimodal_events
 from app.services.firestore_repo import FirestoreRepository
+from app.services.gcs_media import GCSMediaService
 from app.services.redis_state import RedisStateManager
 
 router = APIRouter(prefix="/story", tags=["story"])
@@ -129,6 +130,39 @@ async def submit_choice(req: ChoiceRequest, user: AuthUser = Depends(get_current
             "next_scene": next_scene,
         },
     }
+
+
+@router.post("/pages/{session_id}")
+async def save_story_pages(
+    session_id: str,
+    req: SaveStoryPagesRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> dict:
+    session = await firestore_repo.get_story_session(session_id=session_id)
+    if session is None or session.get("user_id") != user.uid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Story session not found")
+    pages = [p.model_dump(exclude_none=True) for p in req.pages]
+    await firestore_repo.save_story_pages(session_id=session_id, pages=pages)
+    return {"status": "ok"}
+
+
+@router.get("/pages/{session_id}")
+async def get_story_pages(session_id: str, user: AuthUser = Depends(get_current_user)) -> dict:
+    session = await firestore_repo.get_story_session(session_id=session_id)
+    if session is None or session.get("user_id") != user.uid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Story session not found")
+    pages = await firestore_repo.get_story_pages(session_id=session_id)
+    gcs = GCSMediaService()
+    result = []
+    for page in pages:
+        if page.get("type") == "image" and page.get("gcs_uri"):
+            try:
+                result.append({**page, "signed_url": gcs.sign_gcs_uri(page["gcs_uri"])})
+            except Exception:
+                result.append(page)
+        else:
+            result.append(page)
+    return {"status": "ok", "data": result}
 
 
 @router.get("/resume/{session_id}")

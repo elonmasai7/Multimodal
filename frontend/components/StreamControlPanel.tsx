@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { StreamingIndicator } from "@/components/feedback/StreamingIndicator";
 import { PromptInput } from "@/components/forms/PromptInput";
@@ -11,10 +12,11 @@ import { useAuthStore } from "@/store/authStore";
 type SessionKind = "story" | "lesson";
 
 export function StreamControlPanel({ kind, onSessionReady }: { kind: SessionKind; onSessionReady?: (id: string) => void }) {
+  const searchParams = useSearchParams();
+  const defaultPrompt = searchParams.get("prompt") ||
+    (kind === "story" ? "A moonlit pirate adventure about teamwork" : "Explain photosynthesis with diagrams");
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState(
-    kind === "story" ? "A moonlit pirate adventure about teamwork" : "Explain photosynthesis with diagrams"
-  );
+  const [prompt, setPrompt] = useState(defaultPrompt);
   const [error, setError] = useState<string | null>(null);
   const token = useAuthStore((s) => s.token);
   const { connect, disconnect, connected } = useSSEStream();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 import { EngagementHeatmap } from "@/components/analytics/EngagementHeatmap";
 import { LearningStats } from "@/components/analytics/LearningStats";
@@ -183,9 +184,10 @@ export default function DashboardPage() {
               {filteredLessons.map((s) => {
                 const prog = progressMap[s.lesson_id];
                 return (
-                  <div
+                  <Link
                     key={s.lesson_id}
-                    className="rounded-2xl border border-white/10 bg-slate-950/50 p-4"
+                    href={`/lesson?prompt=${encodeURIComponent(s.prompt)}`}
+                    className="block rounded-2xl border border-white/10 bg-slate-950/50 p-4 transition-colors hover:border-cyan-400/40 hover:bg-slate-900/60"
                   >
                     {/* Topic */}
                     <p className="mb-2 text-sm font-medium leading-snug text-slate-100">{s.prompt}</p>
@@ -214,7 +216,7 @@ export default function DashboardPage() {
 
                     {/* Date */}
                     <p className="mt-2 text-xs text-slate-600">{formatDate(s.created_at)}</p>
-                  </div>
+                  </Link>
                 );
               })}
             </div>
@@ -242,9 +244,10 @@ export default function DashboardPage() {
               {filteredStories.map((s) => {
                 const sceneNum = parseInt(s.current_scene.replace(/\D/g, "") || "1", 10);
                 return (
-                  <div
+                  <Link
                     key={s.session_id}
-                    className="rounded-2xl border border-white/10 bg-slate-950/50 p-4"
+                    href={`/story/${s.session_id}`}
+                    className="block rounded-2xl border border-white/10 bg-slate-950/50 p-4 transition-colors hover:border-violet-400/40 hover:bg-slate-900/60"
                   >
                     {/* Story premise */}
                     <p className="mb-2 text-sm font-medium leading-snug text-slate-100">{s.prompt}</p>
@@ -257,11 +260,12 @@ export default function DashboardPage() {
                           <span>&middot; {s.choices_made} choice{s.choices_made !== 1 ? "s" : ""} made</span>
                         )}
                       </span>
+                      <span className="text-violet-500/60">Read book →</span>
                     </div>
 
                     {/* Date */}
                     <p className="mt-2 text-xs text-slate-600">{formatDate(s.created_at)}</p>
-                  </div>
+                  </Link>
                 );
               })}
             </div>

@@ -14,7 +14,7 @@ import { StreamControlPanel } from "@/components/StreamControlPanel";
 import { StreamingRenderer } from "@/components/StreamingRenderer";
 import { InterleavedView } from "@/components/content/InterleavedView";
 import { SimulationCanvas } from "@/components/visualization/SimulationCanvas";
-import { getLessonProgress, submitLessonQuiz } from "@/lib/api";
+import { getLessonProgress, submitLessonQuiz, updateLessonWatchProgress } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { useLearningStore } from "@/store/learningStore";
 
@@ -109,7 +109,18 @@ export default function LessonPage() {
           <div className="flex flex-col gap-4">
             <div className="flex-1 min-h-0">
               {videoUrl ? (
-                <VideoPlayer src={videoUrl} clips={videoClips} />
+                <VideoPlayer
+                  src={videoUrl}
+                  clips={videoClips}
+                  onProgress={(watched, total) => {
+                    if (!token || !lessonId || total <= 0) return;
+                    updateLessonWatchProgress(token, {
+                      lesson_id: lessonId,
+                      watched_seconds: watched,
+                      video_duration_seconds: total,
+                    }).catch(() => {});
+                  }}
+                />
               ) : (
                 <CellStructureScene />
               )}

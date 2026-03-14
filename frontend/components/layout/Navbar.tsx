@@ -20,7 +20,11 @@ export function Navbar() {
   return (
     <header className="sticky top-0 z-40 mb-6 rounded-2xl border border-white/15 bg-slate-950/70 p-3 backdrop-blur-xl">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-200">Modal Learning World</div>
+        <Link href="/" className="flex items-center gap-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/image.png" alt="Msomi" className="h-18 w-18 object-contain" />
+          <span className="text-lg font-bold tracking-wide text-cyan-200">Msomi</span>
+        </Link>
         <nav className="flex flex-wrap items-center gap-2">
           {navLinks.map((item) => (
             <Link

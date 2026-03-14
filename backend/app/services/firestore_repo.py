@@ -58,7 +58,6 @@ class FirestoreRepository:
         query = (
             self.client.collection("story_sessions")
             .where("user_id", "==", user_id)
-            .order_by("created_at", direction="DESCENDING")
             .limit(limit)
         )
         results = []
@@ -66,6 +65,7 @@ class FirestoreRepository:
             data = snap.to_dict() or {}
             data["session_id"] = snap.id
             results.append(data)
+        results.sort(key=lambda x: x.get("created_at") or "", reverse=True)
         return results
 
     async def create_lesson_session(self, *, user_id: str, lesson_id: str, prompt: str, duration: int) -> None:
@@ -94,7 +94,6 @@ class FirestoreRepository:
         query = (
             self.client.collection("lesson_sessions")
             .where("user_id", "==", user_id)
-            .order_by("created_at", direction="DESCENDING")
             .limit(limit)
         )
         results = []
@@ -102,7 +101,20 @@ class FirestoreRepository:
             data = snap.to_dict() or {}
             data["lesson_id"] = snap.id
             results.append(data)
+        results.sort(key=lambda x: x.get("created_at") or "", reverse=True)
         return results
+
+    async def save_story_pages(self, *, session_id: str, pages: list[dict]) -> None:
+        self._ensure_ready()
+        doc = self.client.collection("story_sessions").document(session_id)
+        await doc.update({"pages": pages, "updated_at": datetime.now(UTC)})
+
+    async def get_story_pages(self, *, session_id: str) -> list[dict]:
+        self._ensure_ready()
+        snap = await self.client.collection("story_sessions").document(session_id).get()
+        if not snap.exists:
+            return []
+        return (snap.to_dict() or {}).get("pages", [])
 
     async def append_quiz_attempt(
         self,

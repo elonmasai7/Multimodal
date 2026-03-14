@@ -1,4 +1,4 @@
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import LessonQuizAttempt, StudentProgress
@@ -79,6 +79,66 @@ async def list_student_progress(db: AsyncSession, *, user_id: str | None = None,
         stmt = stmt.where(StudentProgress.user_id == user_id)
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def update_watch_time(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    lesson_id: str,
+    watched_seconds: int,
+    duration_seconds: int,
+) -> StudentProgress:
+    result = await db.execute(
+        select(StudentProgress).where(
+            StudentProgress.user_id == user_id,
+            StudentProgress.lesson_id == lesson_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    watch_completion = min(1.0, watched_seconds / duration_seconds) if duration_seconds > 0 else 0.0
+    if row is None:
+        row = StudentProgress(
+            user_id=user_id,
+            lesson_id=lesson_id,
+            score=0,
+            completion=watch_completion,
+            time_spent_seconds=watched_seconds,
+        )
+        db.add(row)
+    else:
+        # Keep the higher completion value (quiz-based vs watch-based)
+        row.completion = max(float(row.completion or 0), watch_completion)
+        row.time_spent_seconds = max(int(row.time_spent_seconds or 0), watched_seconds)
+
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def quiz_performance(db: AsyncSession, *, limit: int = 100) -> list[dict]:
+    stmt = (
+        select(
+            LessonQuizAttempt.lesson_id,
+            func.count(LessonQuizAttempt.id).label("total"),
+            func.sum(case((LessonQuizAttempt.correct == True, 1), else_=0)).label("correct_count"),
+        )
+        .group_by(LessonQuizAttempt.lesson_id)
+        .order_by(desc(func.count(LessonQuizAttempt.id)))
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = []
+    for row in result:
+        total = int(row.total or 0)
+        correct = int(row.correct_count or 0)
+        rows.append({
+            "lesson_id": row.lesson_id,
+            "total_attempts": total,
+            "correct_count": correct,
+            "correct_rate": round(correct / total, 3) if total > 0 else 0.0,
+        })
+    return rows
 
 
 async def lesson_performance(db: AsyncSession, *, limit: int = 100) -> list[dict]:

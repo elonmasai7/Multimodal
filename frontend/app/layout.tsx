@@ -6,7 +6,7 @@ import { DockNavigation } from "@/components/navigation/DockNavigation";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Modal Learning World",
+  title: "Msomi",
   description: "Immersive multimodal AI learning platform"
 };
 

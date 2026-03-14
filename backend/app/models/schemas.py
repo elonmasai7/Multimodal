@@ -88,3 +88,20 @@ class LessonPerformanceItem(BaseModel):
     average_score: float
     completion_rate: float
     attempts: int
+
+
+class StoryPageItem(BaseModel):
+    type: Literal["narration", "image"]
+    content: str | None = None   # narration text
+    gcs_uri: str | None = None   # image GCS URI (re-signed on read)
+    caption: str | None = None
+
+
+class SaveStoryPagesRequest(BaseModel):
+    pages: list[StoryPageItem]
+
+
+class WatchProgressRequest(BaseModel):
+    lesson_id: str
+    watched_seconds: int = Field(default=0, ge=0)
+    video_duration_seconds: int = Field(default=1, ge=1)

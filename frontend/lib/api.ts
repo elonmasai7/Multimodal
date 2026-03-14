@@ -118,6 +118,22 @@ export async function getLessonProgress(token: string, lessonId: string) {
   return parseResponse(res);
 }
 
+export async function saveStoryPages(token: string, sessionId: string, pages: object[]) {
+  const res = await fetch(`${API_BASE}/story/pages/${sessionId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ pages }),
+  });
+  return parseResponse(res);
+}
+
+export async function getStoryPages(token: string, sessionId: string) {
+  const res = await fetch(`${API_BASE}/story/pages/${sessionId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return parseResponse(res);
+}
+
 export async function getStorySessions(token: string) {
   const res = await fetch(`${API_BASE}/story/sessions`, {
     headers: { Authorization: `Bearer ${token}` }
@@ -143,6 +159,25 @@ export async function getStudentProgressAnalytics(token: string, userId?: string
 export async function getLessonPerformanceAnalytics(token: string) {
   const res = await fetch(`${API_BASE}/analytics/lesson-performance`, {
     headers: { Authorization: `Bearer ${token}` }
+  });
+  return parseResponse(res);
+}
+
+export async function getQuizPerformanceAnalytics(token: string) {
+  const res = await fetch(`${API_BASE}/analytics/quiz-performance`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return parseResponse(res);
+}
+
+export async function updateLessonWatchProgress(
+  token: string,
+  payload: { lesson_id: string; watched_seconds: number; video_duration_seconds: number }
+) {
+  const res = await fetch(`${API_BASE}/lesson/progress/watch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
   });
   return parseResponse(res);
 }
