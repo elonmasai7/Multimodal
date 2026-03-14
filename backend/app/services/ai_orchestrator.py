@@ -140,13 +140,30 @@ class GenAIMultimodalEngine:
             '{"title":"...","narration":"...one paragraph for TTS...","video_prompt":"...one cinematic sentence...","quiz":{"id":"q1","question":"...","options":["A","B","C","D"],"correct":"B"}}'
         )
 
-        response = self.genai.models.generate_content(
-            model=settings.vertex_model_interleaved,
-            contents=instruction,
-            config=genai_types.GenerateContentConfig(
-                response_modalities=["TEXT", "IMAGE"],
-            ),
-        )
+        try:
+            response = self.genai.models.generate_content(
+                model=settings.vertex_model_interleaved,
+                contents=instruction,
+                config=genai_types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                ),
+            )
+        except Exception as exc:
+            # Model not available on this project — fall back to text-only with vertex_model_text
+            if "404" in str(exc) or "NOT_FOUND" in str(exc):
+                logger.warning(
+                    "interleaved_model_unavailable_fallback",
+                    extra={"model": settings.vertex_model_interleaved, "fallback": self.text_model},
+                )
+                response = self.genai.models.generate_content(
+                    model=self.text_model,
+                    contents=instruction,
+                    config=genai_types.GenerateContentConfig(
+                        response_modalities=["TEXT"],
+                    ),
+                )
+            else:
+                raise
 
         parts: list[dict] = []
         raw_text_accumulator = ""
