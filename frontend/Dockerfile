@@ -7,7 +7,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ARG NEXT_PUBLIC_API_BASE
+ARG NEXT_PUBLIC_API_BASE=https://msomi-backend-922658590517.us-central1.run.app/api/v1
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 RUN npm run build
 
