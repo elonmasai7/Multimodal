@@ -4,6 +4,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
+import google.auth
+import google.auth.transport.requests
 from google.cloud import storage
 
 from app.core.config import settings
@@ -23,8 +25,34 @@ class GCSMediaService:
     def __init__(self) -> None:
         if not settings.gcs_media_bucket:
             raise StorageError("GCS_MEDIA_BUCKET is required for media uploads", retryable=False)
-        self.client = storage.Client(project=settings.gcp_project_id or None)
+        self._credentials, _ = google.auth.default()
+        self.client = storage.Client(project=settings.gcp_project_id or None, credentials=self._credentials)
         self.bucket = self.client.bucket(settings.gcs_media_bucket)
+
+    def _refresh_credentials(self) -> tuple[str, str]:
+        """Refresh ADC credentials and return (service_account_email, access_token).
+
+        On Cloud Run, generate_signed_url(version='v4') requires passing the
+        service account email and a fresh access token so the GCS library can
+        call IAM signBlob on our behalf instead of attempting a local sign.
+        """
+        request = google.auth.transport.requests.Request()
+        self._credentials.refresh(request)
+        sa_email = getattr(self._credentials, "service_account_email", None)
+        token = getattr(self._credentials, "token", None)
+        return sa_email, token
+
+    def _generate_signed_url(self, blob: storage.Blob) -> str:
+        sa_email, token = self._refresh_credentials()
+        kwargs: dict = {
+            "version": "v4",
+            "expiration": timedelta(seconds=settings.gcs_signed_url_ttl_seconds),
+            "method": "GET",
+        }
+        if sa_email and token:
+            kwargs["service_account_email"] = sa_email
+            kwargs["access_token"] = token
+        return blob.generate_signed_url(**kwargs)
 
     def sign_gcs_uri(self, gcs_uri: str) -> str:
         """Generate a signed URL for an existing GCS object given its gs:// URI."""
@@ -32,11 +60,7 @@ class GCSMediaService:
         without_scheme = gcs_uri[len("gs://"):]
         bucket_name, _, blob_name = without_scheme.partition("/")
         blob = self.client.bucket(bucket_name).blob(blob_name)
-        return blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(seconds=settings.gcs_signed_url_ttl_seconds),
-            method="GET",
-        )
+        return self._generate_signed_url(blob)
 
     def upload_bytes_and_sign(self, *, data: bytes, prefix: str, content_type: str = "image/png") -> UploadedMedia:
         ext = mimetypes.guess_extension(content_type.split(";")[0].strip()) or ".bin"
@@ -63,11 +87,7 @@ class GCSMediaService:
 
         try:
             signed_url = retry_sync(
-                lambda: blob.generate_signed_url(
-                    version="v4",
-                    expiration=timedelta(seconds=settings.gcs_signed_url_ttl_seconds),
-                    method="GET",
-                ),
+                lambda: self._generate_signed_url(blob),
                 attempts=settings.retry_max_attempts,
                 base_delay=settings.retry_base_delay_seconds,
                 max_delay=settings.retry_max_delay_seconds,
@@ -108,11 +128,7 @@ class GCSMediaService:
 
         try:
             signed_url = retry_sync(
-                lambda: blob.generate_signed_url(
-                    version="v4",
-                    expiration=timedelta(seconds=settings.gcs_signed_url_ttl_seconds),
-                    method="GET",
-                ),
+                lambda: self._generate_signed_url(blob),
                 attempts=settings.retry_max_attempts,
                 base_delay=settings.retry_base_delay_seconds,
                 max_delay=settings.retry_max_delay_seconds,

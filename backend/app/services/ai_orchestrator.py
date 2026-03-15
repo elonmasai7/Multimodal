@@ -783,11 +783,14 @@ async def stream_multimodal_events(
         except Exception as audio_exc:
             logger.warning("audio_generation_skipped", extra={"reason": str(audio_exc)})
 
-        # ── Step 5: Await video result ────────────────────────────────────────
+        # ── Step 5: Await video result (cap at 8 min to avoid Cloud Run timeout) ──
         video_payload = None
         try:
-            video_payload = await video_task
+            video_payload = await asyncio.wait_for(video_task, timeout=480)
             yield _sse("video", session_type, video_payload)
+        except asyncio.TimeoutError:
+            video_task.cancel()
+            logger.warning("video_generation_timeout", extra={"timeout_seconds": 480})
         except Exception as video_exc:
             logger.warning("video_generation_skipped", extra={"reason": str(video_exc)})
 
