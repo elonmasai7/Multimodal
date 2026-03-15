@@ -784,13 +784,26 @@ async def stream_multimodal_events(
             logger.warning("audio_generation_skipped", extra={"reason": str(audio_exc)})
 
         # ── Step 5: Await video result (cap at 8 min to avoid Cloud Run timeout) ──
+        # Send SSE keepalive comments every 20 s so the browser connection never
+        # goes idle while Veo is generating (idle connections trigger onerror and
+        # disconnect, which is why story video appeared to "never arrive").
         video_payload = None
         try:
-            video_payload = await asyncio.wait_for(video_task, timeout=480)
-            yield _sse("video", session_type, video_payload)
-        except asyncio.TimeoutError:
-            video_task.cancel()
-            logger.warning("video_generation_timeout", extra={"timeout_seconds": 480})
+            import time as _time
+            deadline = _time.monotonic() + 480
+            while not video_task.done():
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    video_task.cancel()
+                    logger.warning("video_generation_timeout", extra={"timeout_seconds": 480})
+                    break
+                try:
+                    await asyncio.wait_for(asyncio.shield(video_task), timeout=min(20.0, remaining))
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"  # SSE comment — keeps connection alive, ignored by browser
+            if video_task.done() and not video_task.cancelled():
+                video_payload = video_task.result()
+                yield _sse("video", session_type, video_payload)
         except Exception as video_exc:
             logger.warning("video_generation_skipped", extra={"reason": str(video_exc)})
 

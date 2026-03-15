@@ -63,8 +63,15 @@ export function useSSEStream() {
 
       source.onopen = () => setConnected(true);
       source.onerror = () => {
-        setConnected(false);
-        source.close();
+        // Only hard-close if the EventSource is already CLOSED (permanent failure).
+        // For CONNECTING state (transient error / reconnecting), leave it open so
+        // the browser can auto-reconnect — essential for long Veo generation
+        // (~3-5 min) where idle pauses between keepalives can trigger onerror.
+        if (source.readyState === EventSource.CLOSED) {
+          setConnected(false);
+          source.close();
+        }
+        // readyState === CONNECTING means browser is auto-reconnecting; just wait.
       };
     },
     [clearStream, disconnect, pushEvent]
