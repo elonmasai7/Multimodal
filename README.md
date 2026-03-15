@@ -1,4 +1,4 @@
-# Multimodal AI Learning Platform
+# Msomi
 
 Production-oriented full-stack AI learning platform:
 - Interactive AI storybooks
@@ -9,7 +9,28 @@ Production-oriented full-stack AI learning platform:
 - Frontend: Next.js 14, TailwindCSS, Framer Motion, Zustand, React Spring, React Three Fiber
 - Backend: FastAPI, Firebase Auth, Firestore, Cloud SQL (Postgres), Redis, Vertex AI, Imagen, VideoFX, Google TTS
 - Worker: Celery + Redis
-- Infra: Docker Compose + Nginx
+- Infra: Docker Compose (local), Google Cloud Run (production)
+
+## Production Deployment
+
+| Service       | URL                                                                  |
+|---------------|----------------------------------------------------------------------|
+| Frontend      | https://msomi-frontend-922658590517.us-central1.run.app             |
+| Backend API   | https://msomi-backend-922658590517.us-central1.run.app              |
+| API Docs      | https://msomi-backend-922658590517.us-central1.run.app/docs         |
+| Health Check  | https://msomi-backend-922658590517.us-central1.run.app/health       |
+
+**GCP Project**: `gen-lang-client-0347078188` — Region: `us-central1`
+
+**Infrastructure**:
+- Cloud Run: frontend, backend API, Celery worker
+- Cloud SQL: PostgreSQL 16 (`msomi-db`)
+- Cloud Memorystore: Redis (`10.104.217.51:6379`)
+- Artifact Registry: `us-central1-docker.pkg.dev/gen-lang-client-0347078188/msomi`
+- Secret Manager: `postgres-url`, `redis-url`, `firebase-credentials`, `firebase-web-api-key`
+- VPC Connector: `msomi-vpc-connector` (for Redis private access)
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full redeploy commands and infrastructure details.
 
 ## API Endpoints
 Authentication:
