@@ -1,4 +1,6 @@
 import json
+import os
+import pathlib
 import logging
 
 from fastapi import FastAPI, WebSocket
@@ -43,6 +45,12 @@ if metrics_router:
 
 @app.on_event("startup")
 async def startup() -> None:
+    firebase_creds = os.environ.get("FIREBASE_CREDENTIALS")
+    if firebase_creds and settings.firebase_credentials_path:
+        p = pathlib.Path(settings.firebase_credentials_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(firebase_creds)
+        logger.info("firebase_credentials_written")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("startup_complete")

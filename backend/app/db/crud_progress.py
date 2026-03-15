@@ -116,6 +116,32 @@ async def update_watch_time(
     return row
 
 
+async def my_quiz_performance(db: AsyncSession, *, user_id: str, limit: int = 100) -> list[dict]:
+    stmt = (
+        select(
+            LessonQuizAttempt.lesson_id,
+            func.count(LessonQuizAttempt.id).label("total"),
+            func.sum(case((LessonQuizAttempt.correct == True, 1), else_=0)).label("correct_count"),
+        )
+        .where(LessonQuizAttempt.user_id == user_id)
+        .group_by(LessonQuizAttempt.lesson_id)
+        .order_by(desc(func.count(LessonQuizAttempt.id)))
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = []
+    for row in result:
+        total = int(row.total or 0)
+        correct = int(row.correct_count or 0)
+        rows.append({
+            "lesson_id": row.lesson_id,
+            "total_attempts": total,
+            "correct_count": correct,
+            "correct_rate": round(correct / total, 3) if total > 0 else 0.0,
+        })
+    return rows
+
+
 async def quiz_performance(db: AsyncSession, *, limit: int = 100) -> list[dict]:
     stmt = (
         select(

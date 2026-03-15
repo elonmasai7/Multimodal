@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Multimodal AI Learning Platform"
+    app_name: str = "Msomi"
     env: str = "dev"
     api_prefix: str = "/api/v1"
     log_level: str = "INFO"

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.crud_progress import lesson_performance, list_student_progress, quiz_performance
+from app.db.crud_progress import lesson_performance, list_student_progress, my_quiz_performance, quiz_performance
 from app.db.session import get_db_session
 from app.deps.auth import AuthUser, get_current_user
 
@@ -39,6 +39,16 @@ async def analytics_lesson_performance(
     db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     rows = await lesson_performance(db, limit=limit)
+    return {"status": "ok", "data": rows}
+
+
+@router.get("/my-quiz-performance")
+async def analytics_my_quiz_performance(
+    limit: int = 100,
+    user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    rows = await my_quiz_performance(db, user_id=user.uid, limit=limit)
     return {"status": "ok", "data": rows}
 
 
