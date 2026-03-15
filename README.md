@@ -116,7 +116,7 @@ docker compose up --build
 ```
 
 ## Demo Login
-- Default local demo credentials: `demo@modal.local` / `demo12345`
+- Default local demo credentials: `demo@example.com` / `demo12345`
 - Override with backend env vars `DEMO_AUTH_EMAIL`, `DEMO_AUTH_PASSWORD`, `DEMO_AUTH_TOKEN`, and frontend env vars `NEXT_PUBLIC_DEMO_LOGIN_EMAIL`, `NEXT_PUBLIC_DEMO_LOGIN_PASSWORD`
 - Demo auth is intended for local/dev use when Firebase is unavailable or you want a predictable login
 

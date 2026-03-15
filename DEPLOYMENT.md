@@ -164,5 +164,6 @@ gcloud auth print-access-token | docker login -u oauth2accesstoken --password-st
 The Compute Engine default service account (`922658590517-compute@developer.gserviceaccount.com`) has been granted:
 - `roles/aiplatform.user` — Vertex AI access
 - `roles/storage.objectAdmin` — GCS bucket access
+- `roles/iam.serviceAccountTokenCreator` — GCS signed URL generation (required for media URLs)
 - `roles/secretmanager.secretAccessor` — Secret Manager access
 - `roles/cloudsql.client` — Cloud SQL access
