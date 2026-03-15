@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     vertex_model_interleaved: str = "gemini-2.0-flash-preview-image-generation"
     vertex_model_image: str = "imagen-3.0-generate-002"
     vertex_model_video: str = "veo-3.1-generate-001"
+    vertex_model_video_story: str | None = None  # if set, story mode uses this model (e.g. veo-3.0-fast-generate-001)
     vertex_model_text_backup: str | None = None
     vertex_model_image_backup: str | None = None
 
@@ -66,6 +67,7 @@ class Settings(BaseSettings):
         "videofx_fallback_endpoint",
         "sentry_dsn",
         "otel_endpoint",
+        "vertex_model_video_story",
         "vertex_model_text_backup",
         "vertex_model_image_backup",
     )

@@ -530,7 +530,7 @@ class GenAIMultimodalEngine:
             return "16:9"
         return "16:9" if w >= h else "9:16"
 
-    def _generate_single_video_clip(self, *, video_prompt: str, resolution: str) -> dict:
+    def _generate_single_video_clip(self, *, video_prompt: str, resolution: str, model: str | None = None) -> dict:
         import time
 
         if not settings.gcs_media_bucket:
@@ -543,7 +543,7 @@ class GenAIMultimodalEngine:
             output_gcs_uri=f"gs://{settings.gcs_media_bucket}/videos",
         )
         operation = self.genai.models.generate_videos(
-            model=settings.vertex_model_video,
+            model=model or settings.vertex_model_video,
             prompt=video_prompt,
             config=config,
         )
@@ -569,7 +569,7 @@ class GenAIMultimodalEngine:
         signed_url = self.gcs.sign_gcs_uri(gcs_uri)
         return {"gcs_uri": gcs_uri, "signed_url": signed_url}
 
-    def _generate_video_genai(self, *, video_prompt: str, options: VideoOptions) -> dict:
+    def _generate_video_genai(self, *, video_prompt: str, options: VideoOptions, model: str | None = None) -> dict:
         import math
         import concurrent.futures
 
@@ -582,6 +582,7 @@ class GenAIMultimodalEngine:
             result = self._generate_single_video_clip(
                 video_prompt=video_prompt,
                 resolution=options.resolution,
+                model=model,
             )
             return {**result, "clips": [result]}
 
@@ -600,6 +601,7 @@ class GenAIMultimodalEngine:
             return self._generate_single_video_clip(
                 video_prompt=prompt,
                 resolution=options.resolution,
+                model=model,
             )
 
         logger.info("video_clip_chain_start", extra={"num_clips": num_clips, "total_seconds": num_clips * clip_duration})
@@ -613,7 +615,7 @@ class GenAIMultimodalEngine:
             "gcs_uri": clips[0]["gcs_uri"],
         }
 
-    def _generate_video_sync(self, *, video_prompt: str, options: VideoOptions) -> dict:
+    def _generate_video_sync(self, *, video_prompt: str, options: VideoOptions, model: str | None = None) -> dict:
         endpoint = settings.videofx_endpoint
         if endpoint:
             try:
@@ -634,15 +636,15 @@ class GenAIMultimodalEngine:
                         options=fallback_options,
                     )
                 logger.warning("videofx_primary_failed_genai_fallback", extra={"error": str(exc)})
-                return self._generate_video_genai(video_prompt=video_prompt, options=options)
+                return self._generate_video_genai(video_prompt=video_prompt, options=options, model=model)
 
-        return self._generate_video_genai(video_prompt=video_prompt, options=options)
+        return self._generate_video_genai(video_prompt=video_prompt, options=options, model=model)
 
-    async def generate_video(self, *, video_prompt: str, options: VideoOptions | None = None) -> dict:
+    async def generate_video(self, *, video_prompt: str, options: VideoOptions | None = None, model: str | None = None) -> dict:
         self._init_clients()
         set_stage("inference")
         resolved_options = options or VideoOptions()
-        return await asyncio.to_thread(self._generate_video_sync, video_prompt=video_prompt, options=resolved_options)
+        return await asyncio.to_thread(self._generate_video_sync, video_prompt=video_prompt, options=resolved_options, model=model)
 
 
 engine = GenAIMultimodalEngine()
@@ -752,8 +754,9 @@ async def stream_multimodal_events(
         logger.info("pipeline_stage", extra={"stage": "video", "session_type": session_type, "request_id": request_id or ""})
         yield _sse("status", session_type, {"message": "Generating Veo video…"})
 
+        story_video_model = settings.vertex_model_video_story if session_type == "story" else None
         video_task = asyncio.create_task(
-            engine.generate_video(video_prompt=video_prompt_text, options=options)
+            engine.generate_video(video_prompt=video_prompt_text, options=options, model=story_video_model)
         )
 
         # ── Step 4: TTS narration audio ──────────────────────────────────────
