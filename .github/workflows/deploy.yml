@@ -1,0 +1,74 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - master
+
+env:
+  PROJECT_ID: gen-lang-client-0347078188
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/gen-lang-client-0347078188/msomi
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & push backend image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/backend:${{ github.sha }} -t ${{ env.REGISTRY }}/backend:latest backend
+          docker push ${{ env.REGISTRY }}/backend:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/backend:latest
+
+      - name: Build & push frontend image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/frontend:${{ github.sha }} -t ${{ env.REGISTRY }}/frontend:latest frontend
+          docker push ${{ env.REGISTRY }}/frontend:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/frontend:latest
+
+      - name: Deploy backend to Cloud Run
+        run: |
+          gcloud run deploy msomi-backend \
+            --image=${{ env.REGISTRY }}/backend:${{ github.sha }} \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --quiet
+
+      - name: Deploy worker to Cloud Run
+        run: |
+          gcloud run deploy msomi-worker \
+            --image=${{ env.REGISTRY }}/backend:${{ github.sha }} \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --quiet
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          gcloud run deploy msomi-frontend \
+            --image=${{ env.REGISTRY }}/frontend:${{ github.sha }} \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --quiet
