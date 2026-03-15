@@ -6,11 +6,15 @@ import Link from "next/link";
 import { EngagementHeatmap } from "@/components/analytics/EngagementHeatmap";
 import { LearningStats } from "@/components/analytics/LearningStats";
 import { ProgressChart } from "@/components/analytics/ProgressChart";
-import { FileUploader } from "@/components/forms/FileUploader";
 import { SearchBar } from "@/components/forms/SearchBar";
 import { Navbar } from "@/components/layout/Navbar";
 import { PageContainer } from "@/components/layout/PageContainer";
-import { getLessonSessions, getStorySessions, getStudentProgressAnalytics } from "@/lib/api";
+import {
+  getLessonSessions,
+  getMyQuizPerformanceAnalytics,
+  getStorySessions,
+  getStudentProgressAnalytics,
+} from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 
 type LessonSession = {
@@ -33,6 +37,14 @@ type ProgressRow = {
   score: number;
   completion: number;
   time_spent_seconds: number;
+  updated_at?: string;
+};
+
+type QuizPerfRow = {
+  lesson_id: string;
+  total_attempts: number;
+  correct_count: number;
+  correct_rate: number;
 };
 
 function ScoreBadge({ score }: { score: number }) {
@@ -45,23 +57,32 @@ function ScoreBadge({ score }: { score: number }) {
       : "bg-red-500/20 text-red-300 border-red-500/30";
   return (
     <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${color}`}>
-      {rounded}%
+      {rounded}/100
     </span>
   );
 }
 
 function CompletionBar({ value }: { value: number }) {
   const pct = Math.round(Math.min(1, value) * 100);
+  const color = pct >= 85 ? "bg-emerald-400" : pct >= 40 ? "bg-amber-400" : "bg-red-400/70";
   return (
     <div className="flex items-center gap-2">
       <div className="h-1.5 w-20 overflow-hidden rounded-full bg-white/10">
-        <div
-          className="h-full rounded-full bg-cyan-400"
-          style={{ width: `${pct}%` }}
-        />
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs text-slate-400">{pct}%</span>
     </div>
+  );
+}
+
+function QuizRateBadge({ correct, total }: { correct: number; total: number }) {
+  if (total === 0) return null;
+  const pct = Math.round((correct / total) * 100);
+  const color = pct >= 60 ? "text-emerald-300" : "text-amber-300";
+  return (
+    <span className={`text-xs font-medium ${color}`}>
+      {correct}/{total} correct ({pct}%)
+    </span>
   );
 }
 
@@ -74,8 +95,11 @@ function formatDate(iso: string) {
 }
 
 function formatTime(seconds: number) {
+  if (seconds <= 0) return "0s";
   if (seconds < 60) return `${seconds}s`;
-  return `${Math.round(seconds / 60)}m`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
 export default function DashboardPage() {
@@ -83,57 +107,82 @@ export default function DashboardPage() {
   const [progressRows, setProgressRows] = useState<ProgressRow[]>([]);
   const [lessonSessions, setLessonSessions] = useState<LessonSession[]>([]);
   const [storySessions, setStorySessions] = useState<StorySession[]>([]);
+  const [myQuizPerf, setMyQuizPerf] = useState<QuizPerfRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const token = useAuthStore((s) => s.token);
   const userId = useAuthStore((s) => s.userId);
 
   useEffect(() => {
-    async function load() {
-      if (!token) return;
-      try {
-        setError(null);
-        const [progRes, lessonRes, storyRes] = await Promise.all([
-          getStudentProgressAnalytics(token, userId ?? undefined),
-          getLessonSessions(token),
-          getStorySessions(token),
-        ]);
+    if (!token) return;
+    setError(null);
+    Promise.all([
+      getStudentProgressAnalytics(token, userId ?? undefined),
+      getLessonSessions(token),
+      getStorySessions(token),
+      getMyQuizPerformanceAnalytics(token),
+    ])
+      .then(([progRes, lessonRes, storyRes, quizRes]) => {
         setProgressRows(Array.isArray(progRes.data) ? progRes.data : []);
         setLessonSessions(Array.isArray(lessonRes.data) ? lessonRes.data : []);
         setStorySessions(Array.isArray(storyRes.data) ? storyRes.data : []);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load data");
-      }
-    }
-    load();
+        setMyQuizPerf(Array.isArray(quizRes.data) ? quizRes.data : []);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load data"));
   }, [token, userId]);
 
-  // Map progress by lesson_id for quick lookup
   const progressMap = useMemo(() => {
     const map: Record<string, ProgressRow> = {};
     for (const row of progressRows) map[row.lesson_id] = row;
     return map;
   }, [progressRows]);
 
-  const stats = useMemo(() => {
-    if (progressRows.length === 0) {
-      return [
-        { label: "Lessons completed", value: "0" },
-        { label: "Stories explored", value: String(storySessions.length) },
-        { label: "Quiz accuracy", value: "0%" },
-        { label: "Time studying", value: "0m" },
-      ];
-    }
-    const avgScore = progressRows.reduce((a, r) => a + Number(r.score || 0), 0) / progressRows.length;
-    const totalTime = progressRows.reduce((a, r) => a + Number(r.time_spent_seconds || 0), 0);
-    return [
-      { label: "Lessons completed", value: String(progressRows.length) },
-      { label: "Stories explored", value: String(storySessions.length) },
-      { label: "Quiz accuracy", value: `${Math.round(avgScore)}%` },
-      { label: "Time studying", value: formatTime(totalTime) },
-    ];
-  }, [progressRows, storySessions.length]);
+  const quizMap = useMemo(() => {
+    const map: Record<string, QuizPerfRow> = {};
+    for (const row of myQuizPerf) map[row.lesson_id] = row;
+    return map;
+  }, [myQuizPerf]);
 
-  // Filter lessons by search query
+  const stats = useMemo(() => {
+    const avgScore = progressRows.length
+      ? Math.round(progressRows.reduce((a: number, r: ProgressRow) => a + Number(r.score || 0), 0) / progressRows.length)
+      : 0;
+    const totalTimeSec = progressRows.reduce((a: number, r: ProgressRow) => a + Number(r.time_spent_seconds || 0), 0);
+    const totalCorrect = myQuizPerf.reduce((a: number, r: QuizPerfRow) => a + r.correct_count, 0);
+    const totalAttempts = myQuizPerf.reduce((a: number, r: QuizPerfRow) => a + r.total_attempts, 0);
+    const quizAccuracy = totalAttempts > 0 ? `${Math.round((totalCorrect / totalAttempts) * 100)}%` : "—";
+    return [
+      { label: "Lessons started", value: String(lessonSessions.length) },
+      { label: "Avg quiz score", value: progressRows.length ? `${avgScore}/100` : "—" },
+      { label: "Quiz accuracy", value: quizAccuracy },
+      { label: "Total watch time", value: formatTime(totalTimeSec) },
+    ];
+  }, [progressRows, lessonSessions.length, myQuizPerf]);
+
+  // Scores sorted by updated_at for ProgressChart
+  const { chartScores, chartLabels } = useMemo(() => {
+    const sorted = [...progressRows].sort((a, b) =>
+      (a.updated_at ?? "").localeCompare(b.updated_at ?? "")
+    );
+    return {
+      chartScores: sorted.map((r: ProgressRow) => Math.round(r.score)),
+      chartLabels: sorted.map((r: ProgressRow) => {
+        const s = lessonSessions.find((l: LessonSession) => l.lesson_id === r.lesson_id);
+        return s ? s.prompt.split(" ").slice(0, 3).join(" ") : r.lesson_id.slice(0, 6);
+      }),
+    };
+  }, [progressRows, lessonSessions]);
+
+  // Completions for EngagementHeatmap — aligned to lesson session order
+  const { heatmapCompletions, heatmapLabels } = useMemo(() => {
+    return {
+      heatmapCompletions: lessonSessions.map((s: LessonSession) => {
+        const p = progressMap[s.lesson_id];
+        return p ? Number(p.completion) : 0;
+      }),
+      heatmapLabels: lessonSessions.map((s: LessonSession) => s.prompt.split(" ").slice(0, 3).join(" ")),
+    };
+  }, [lessonSessions, progressMap]);
+
   const filteredLessons = lessonSessions.filter(
     (s) => !query || s.prompt.toLowerCase().includes(query.toLowerCase())
   );
@@ -145,6 +194,7 @@ export default function DashboardPage() {
     <PageContainer className="pb-24">
       <Navbar />
       <div className="space-y-6">
+
         {/* ── Overview ── */}
         <section className="space-y-4 rounded-3xl border border-white/15 bg-white/5 p-6">
           <h1 className="text-4xl font-bold">Student Mission Control</h1>
@@ -152,10 +202,9 @@ export default function DashboardPage() {
           {error && <p className="text-sm text-red-300">{error}</p>}
           <LearningStats stats={stats} />
           <div className="grid gap-4 lg:grid-cols-2">
-            <ProgressChart />
-            <EngagementHeatmap />
+            <ProgressChart values={chartScores} labels={chartLabels} />
+            <EngagementHeatmap completions={heatmapCompletions} labels={heatmapLabels} />
           </div>
-          <FileUploader />
         </section>
 
         {/* ── Search ── */}
@@ -183,38 +232,51 @@ export default function DashboardPage() {
             <div className="space-y-3">
               {filteredLessons.map((s) => {
                 const prog = progressMap[s.lesson_id];
+                const quiz = quizMap[s.lesson_id];
                 return (
                   <Link
                     key={s.lesson_id}
                     href={`/lesson?prompt=${encodeURIComponent(s.prompt)}`}
                     className="block rounded-2xl border border-white/10 bg-slate-950/50 p-4 transition-colors hover:border-cyan-400/40 hover:bg-slate-900/60"
                   >
-                    {/* Topic */}
                     <p className="mb-2 text-sm font-medium leading-snug text-slate-100">{s.prompt}</p>
 
-                    {/* Metrics row */}
-                    <div className="flex flex-wrap items-center gap-3">
-                      {prog ? (
-                        <>
+                    {/* Metrics grid */}
+                    <div className="mb-2 grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-xl bg-white/5 p-2">
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">Quiz Score</p>
+                        {prog ? (
                           <ScoreBadge score={prog.score} />
-                          <CompletionBar value={prog.completion} />
-                          {prog.time_spent_seconds > 0 && (
-                            <span className="text-xs text-slate-400">
-                              {formatTime(prog.time_spent_seconds)} spent
-                            </span>
+                        ) : (
+                          <span className="text-xs text-slate-500">—</span>
+                        )}
+                      </div>
+                      <div className="rounded-xl bg-white/5 p-2">
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">Watch Time</p>
+                        <p className="mt-0.5 text-sm font-semibold text-cyan-300">
+                          {prog && prog.time_spent_seconds > 0 ? formatTime(prog.time_spent_seconds) : "—"}
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-white/5 p-2">
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">Quiz Correct</p>
+                        <p className="mt-0.5 text-xs font-medium">
+                          {quiz ? (
+                            <QuizRateBadge correct={quiz.correct_count} total={quiz.total_attempts} />
+                          ) : (
+                            <span className="text-slate-500">—</span>
                           )}
-                        </>
-                      ) : (
-                        <span className="text-xs text-slate-500">No score recorded yet</span>
-                      )}
-                      {s.quiz_attempts > 0 && (
-                        <span className="text-xs text-slate-400">
-                          {s.quiz_attempts} quiz attempt{s.quiz_attempts !== 1 ? "s" : ""}
-                        </span>
-                      )}
+                        </p>
+                      </div>
                     </div>
 
-                    {/* Date */}
+                    {/* Video completion bar */}
+                    {prog && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] uppercase tracking-wider text-slate-500">Video</span>
+                        <CompletionBar value={prog.completion} />
+                      </div>
+                    )}
+
                     <p className="mt-2 text-xs text-slate-600">{formatDate(s.created_at)}</p>
                   </Link>
                 );
@@ -241,7 +303,7 @@ export default function DashboardPage() {
             </p>
           ) : (
             <div className="space-y-3">
-              {filteredStories.map((s) => {
+              {filteredStories.map((s: StorySession) => {
                 const sceneNum = parseInt(s.current_scene.replace(/\D/g, "") || "1", 10);
                 return (
                   <Link
@@ -249,21 +311,14 @@ export default function DashboardPage() {
                     href={`/story/${s.session_id}`}
                     className="block rounded-2xl border border-white/10 bg-slate-950/50 p-4 transition-colors hover:border-violet-400/40 hover:bg-slate-900/60"
                   >
-                    {/* Story premise */}
                     <p className="mb-2 text-sm font-medium leading-snug text-slate-100">{s.prompt}</p>
-
-                    {/* Progress row */}
                     <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-                      <span className="flex items-center gap-1">
-                        <span className="text-violet-400">Scene {sceneNum}</span>
-                        {s.choices_made > 0 && (
-                          <span>&middot; {s.choices_made} choice{s.choices_made !== 1 ? "s" : ""} made</span>
-                        )}
-                      </span>
+                      <span className="text-violet-400">Scene {sceneNum}</span>
+                      {s.choices_made > 0 && (
+                        <span>{s.choices_made} choice{s.choices_made !== 1 ? "s" : ""} made</span>
+                      )}
                       <span className="text-violet-500/60">Read book →</span>
                     </div>
-
-                    {/* Date */}
                     <p className="mt-2 text-xs text-slate-600">{formatDate(s.created_at)}</p>
                   </Link>
                 );

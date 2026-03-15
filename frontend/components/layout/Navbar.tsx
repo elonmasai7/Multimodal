@@ -22,7 +22,7 @@ export function Navbar() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <Link href="/" className="flex items-center gap-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/image.png" alt="Msomi" className="h-18 w-18 object-contain" />
+          <img src="/msomi-book.png" alt="Msomi" className="h-16 w-16 object-contain" />
           <span className="text-lg font-bold tracking-wide text-cyan-200">Msomi</span>
         </Link>
         <nav className="flex flex-wrap items-center gap-2">

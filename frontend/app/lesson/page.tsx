@@ -1,10 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+export const dynamic = "force-dynamic";
+
+import { Suspense, useMemo, useState } from "react";
 
 import { CellStructureScene } from "@/3d-scenes/CellStructureScene";
 import { Toast } from "@/components/feedback/Toast";
-import { DragDropCanvas } from "@/components/interaction/DragDropCanvas";
+import { SketchPad } from "@/components/interaction/SketchPad";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Navbar } from "@/components/layout/Navbar";
 import { PageContainer } from "@/components/layout/PageContainer";
@@ -13,7 +15,6 @@ import { VideoPlayer } from "@/components/media/VideoPlayer";
 import { StreamControlPanel } from "@/components/StreamControlPanel";
 import { StreamingRenderer } from "@/components/StreamingRenderer";
 import { InterleavedView } from "@/components/content/InterleavedView";
-import { SimulationCanvas } from "@/components/visualization/SimulationCanvas";
 import { getLessonProgress, submitLessonQuiz, updateLessonWatchProgress } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { useLearningStore } from "@/store/learningStore";
@@ -101,8 +102,7 @@ export default function LessonPage() {
                 diagrams together here as a single interleaved experience.
               </div>
             )}
-            <DragDropCanvas />
-            <SimulationCanvas />
+            <SketchPad />
           </div>
 
           {/* ── Center: Video (Veo) + Audio ── */}
@@ -141,7 +141,9 @@ export default function LessonPage() {
           {/* ── Right: Controls + status / quiz stream ── */}
           <Sidebar title="Live Lesson Stream">
             <div className="space-y-3">
-              <StreamControlPanel kind="lesson" onSessionReady={setLessonId} />
+              <Suspense fallback={null}>
+                <StreamControlPanel kind="lesson" onSessionReady={setLessonId} />
+              </Suspense>
               {/*
                 Exclude narration + image: those are shown in the
                 InterleavedView on the left as the mixed-media document.

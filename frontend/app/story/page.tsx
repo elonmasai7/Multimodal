@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+export const dynamic = "force-dynamic";
+
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { SolarSystemScene } from "@/3d-scenes/SolarSystemScene";
 import { LearningCanvas } from "@/components/canvas/LearningCanvas";
@@ -115,7 +117,9 @@ export default function StoryPage() {
 
           <Sidebar title="Live AI Stream">
             <div className="space-y-3">
-              <StreamControlPanel kind="story" onSessionReady={setSessionId} />
+              <Suspense fallback={null}>
+                <StreamControlPanel kind="story" onSessionReady={setSessionId} />
+              </Suspense>
               <StreamingRenderer />
             </div>
           </Sidebar>

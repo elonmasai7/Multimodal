@@ -163,6 +163,13 @@ export async function getLessonPerformanceAnalytics(token: string) {
   return parseResponse(res);
 }
 
+export async function getMyQuizPerformanceAnalytics(token: string) {
+  const res = await fetch(`${API_BASE}/analytics/my-quiz-performance`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return parseResponse(res);
+}
+
 export async function getQuizPerformanceAnalytics(token: string) {
   const res = await fetch(`${API_BASE}/analytics/quiz-performance`, {
     headers: { Authorization: `Bearer ${token}` }

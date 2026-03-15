@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 
 import { refreshAuthToken } from "@/lib/api";
-import { useAuthStore } from "@/store/authStore";
+import { useAuthStore, AuthState } from "@/store/authStore";
 
 function getTokenExpiry(token: string): number | null {
   try {
@@ -14,7 +14,7 @@ function getTokenExpiry(token: string): number | null {
   }
 }
 
-async function tryRefresh(refreshToken: string, setSession: ReturnType<typeof useAuthStore>["setSession"], currentState: { userId: string | null; email: string | null }) {
+async function tryRefresh(refreshToken: string, setSession: AuthState["setSession"], currentState: { userId: string | null; email: string | null }) {
   try {
     const data = await refreshAuthToken(refreshToken);
     if (data.id_token) {
