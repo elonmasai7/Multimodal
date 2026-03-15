@@ -13,7 +13,10 @@ __pycache__/
 .env.*
 
 # Secrets
+backend/credentials/
 backend/*firebase-adminsdk*.json
+*firebase-adminsdk*.json
+*.json.key
 
 # OS
 .DS_Store
