@@ -6,6 +6,7 @@ import { Suspense, useMemo, useState } from "react";
 
 import { CellStructureScene } from "@/3d-scenes/CellStructureScene";
 import { Toast } from "@/components/feedback/Toast";
+import { QuizPanel } from "@/components/interaction/QuizPanel";
 import { SketchPad } from "@/components/interaction/SketchPad";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Navbar } from "@/components/layout/Navbar";
@@ -15,6 +16,7 @@ import { VideoPlayer } from "@/components/media/VideoPlayer";
 import { StreamControlPanel } from "@/components/StreamControlPanel";
 import { StreamingRenderer } from "@/components/StreamingRenderer";
 import { InterleavedView } from "@/components/content/InterleavedView";
+import type { QuizPayload } from "@/types/stream";
 import { getLessonProgress, submitLessonQuiz, updateLessonWatchProgress } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { useLearningStore } from "@/store/learningStore";
@@ -50,6 +52,13 @@ export default function LessonPage() {
     const item = stream.slice().reverse().find((evt) => evt.type === "audio");
     const data = item?.payload?.data as Record<string, unknown> | undefined;
     return typeof data?.signed_url === "string" ? data.signed_url : null;
+  }, [stream]);
+
+  // Quiz event from stream
+  const quizData = useMemo(() => {
+    const item = stream.find((evt) => evt.type === "quiz");
+    if (!item) return null;
+    return item.payload?.data as QuizPayload | undefined;
   }, [stream]);
 
   // Whether interleaved content has started streaming
@@ -135,23 +144,29 @@ export default function LessonPage() {
               </div>
             )}
 
+            {quizData && (
+              <QuizPanel
+                question={String(quizData.question ?? "Quiz question")}
+                options={Array.isArray(quizData.options) ? (quizData.options as string[]) : []}
+                onSubmit={onQuizSubmit}
+              />
+            )}
+
             {toast && <Toast message={toast} />}
           </div>
 
-          {/* ── Right: Controls + status / quiz stream ── */}
+          {/* ── Right: Controls + status stream ── */}
           <Sidebar title="Live Lesson Stream">
             <div className="space-y-3">
               <Suspense fallback={null}>
                 <StreamControlPanel kind="lesson" onSessionReady={setLessonId} />
               </Suspense>
               {/*
-                Exclude narration + image: those are shown in the
-                InterleavedView on the left as the mixed-media document.
-                Exclude video + audio: shown in the center column.
+                Exclude narration + image: shown in InterleavedView on the left.
+                Exclude video + audio + quiz: shown in the center column.
               */}
               <StreamingRenderer
-                onQuizSubmit={onQuizSubmit}
-                exclude={["narration", "image", "video", "audio"]}
+                exclude={["narration", "image", "video", "audio", "quiz"]}
               />
             </div>
           </Sidebar>

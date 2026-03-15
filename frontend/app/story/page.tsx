@@ -120,7 +120,7 @@ export default function StoryPage() {
               <Suspense fallback={null}>
                 <StreamControlPanel kind="story" onSessionReady={setSessionId} />
               </Suspense>
-              <StreamingRenderer />
+              <StreamingRenderer exclude={["video", "quiz", "image", "narration"]} />
             </div>
           </Sidebar>
         </div>
