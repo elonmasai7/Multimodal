@@ -42,7 +42,11 @@ jobs:
 
       - name: Build & push frontend image
         run: |
-          docker build -t ${{ env.REGISTRY }}/frontend:${{ github.sha }} -t ${{ env.REGISTRY }}/frontend:latest frontend
+          docker build \
+            --build-arg NEXT_PUBLIC_API_BASE=https://msomi-backend-922658590517.us-central1.run.app/api/v1 \
+            -t ${{ env.REGISTRY }}/frontend:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/frontend:latest \
+            frontend
           docker push ${{ env.REGISTRY }}/frontend:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/frontend:latest
 
