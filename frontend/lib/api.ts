@@ -1,6 +1,6 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
-export const DEMO_LOGIN_EMAIL = process.env.NEXT_PUBLIC_DEMO_LOGIN_EMAIL ?? "demo@modal.local";
-export const DEMO_LOGIN_PASSWORD = process.env.NEXT_PUBLIC_DEMO_LOGIN_PASSWORD ?? "demo12345";
+export const DEMO_LOGIN_EMAIL = process.env.NEXT_PUBLIC_DEMO_LOGIN_EMAIL || "demo@modal.local";
+export const DEMO_LOGIN_PASSWORD = process.env.NEXT_PUBLIC_DEMO_LOGIN_PASSWORD || "demo12345";
 
 export type AuthPayload = {
   id_token: string;
@@ -15,7 +15,10 @@ async function parseResponse(res: Response) {
     const validationErrors = Array.isArray(body?.details?.errors) ? body.details.errors : [];
     const validationMessage =
       validationErrors.length > 0 ? validationErrors.map((error: { msg?: string }) => error.msg).filter(Boolean).join(", ") : null;
-    throw new Error(validationMessage ?? body?.message ?? body?.detail ?? `Request failed: ${res.status}`);
+    const detail = Array.isArray(body?.detail)
+      ? body.detail.map((e: { msg?: string }) => e.msg).filter(Boolean).join(", ")
+      : body?.detail;
+    throw new Error(validationMessage ?? body?.message ?? detail ?? `Request failed: ${res.status}`);
   }
   return body;
 }
