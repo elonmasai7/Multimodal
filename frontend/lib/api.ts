@@ -1,4 +1,4 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api/v1";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
 export const DEMO_LOGIN_EMAIL = process.env.NEXT_PUBLIC_DEMO_LOGIN_EMAIL ?? "demo@modal.local";
 export const DEMO_LOGIN_PASSWORD = process.env.NEXT_PUBLIC_DEMO_LOGIN_PASSWORD ?? "demo12345";
 
