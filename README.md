@@ -4,6 +4,8 @@ Msomi is a multimodal AI agent that generates immersive storybooks and education
 
 **Live Demo**: https://msomi-frontend-922658590517.us-central1.run.app
 
+> **Note for Judges**: The live demo runs on a shared GCP project with Vertex AI quota limits. During periods of high usage (concurrent Veo video generation, Gemini calls), the backend may return transient `503` or `429` errors. If the live demo is unavailable or slow, we recommend **reproducing the project locally or on your own GCP project** using the step-by-step instructions below — the full setup takes approximately 20–30 minutes.
+
 ---
 
 ## What Makes It Different
