@@ -258,17 +258,25 @@ class GenAIMultimodalEngine:
     def generate_lesson_plan(self, prompt: str, session_type: str) -> dict:
         self._init_clients()
         instruction = (
-            "Return strict JSON only with keys: title, narration, sections, image_prompt, video_prompt, quiz. "
+            "Use Google Search to ground your response with accurate, up-to-date facts. "
+            "Then return ONLY a JSON object (no markdown, no extra text) with keys: "
+            "title, narration, sections, image_prompt, video_prompt, quiz. "
             "quiz must include id, question, options (array), correct. "
             f"Build a {session_type} learning experience for prompt: {prompt}"
         )
         set_stage("inference")
 
         def _call(model_name: str) -> dict:
+            try:
+                search_tool = genai_types.Tool(google_search=genai_types.GoogleSearch())
+                config = genai_types.GenerateContentConfig(tools=[search_tool])
+            except Exception:
+                # Fallback if GoogleSearch tool not available in this SDK version
+                config = genai_types.GenerateContentConfig()
             response = self.genai.models.generate_content(
                 model=model_name,
                 contents=instruction,
-                config=genai_types.GenerateContentConfig(response_mime_type="application/json"),
+                config=config,
             )
             text = getattr(response, "text", "") or ""
             if not text:
