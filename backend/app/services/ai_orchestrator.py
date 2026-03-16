@@ -154,6 +154,7 @@ class GenAIMultimodalEngine:
                 contents=instruction,
                 config=genai_types.GenerateContentConfig(
                     response_modalities=["TEXT", "IMAGE"],
+                    temperature=0.7,  # creative but grounded — avoid pure fabrication
                 ),
             )
         except Exception as exc:
@@ -258,10 +259,13 @@ class GenAIMultimodalEngine:
     def generate_lesson_plan(self, prompt: str, session_type: str) -> dict:
         self._init_clients()
         instruction = (
-            "Use Google Search to ground your response with accurate, up-to-date facts. "
+            "You are a factual educational content creator. "
+            "Use Google Search to ground your response with accurate, verified facts only. "
+            "Do NOT invent statistics, dates, names, or claims — only include information you can verify. "
+            "If you are uncertain about a fact, omit it rather than guess. "
             "Then return ONLY a JSON object (no markdown, no extra text) with keys: "
             "title, narration, sections, image_prompt, video_prompt, quiz. "
-            "quiz must include id, question, options (array), correct. "
+            "quiz must include id, question, options (array), correct — quiz answers must be factually correct. "
             f"Build a {session_type} learning experience for prompt: {prompt}"
         )
         set_stage("inference")
@@ -269,10 +273,13 @@ class GenAIMultimodalEngine:
         def _call(model_name: str) -> dict:
             try:
                 search_tool = genai_types.Tool(google_search=genai_types.GoogleSearch())
-                config = genai_types.GenerateContentConfig(tools=[search_tool])
+                config = genai_types.GenerateContentConfig(
+                    tools=[search_tool],
+                    temperature=0.2,  # low temperature = less hallucination, more factual
+                )
             except Exception:
                 # Fallback if GoogleSearch tool not available in this SDK version
-                config = genai_types.GenerateContentConfig()
+                config = genai_types.GenerateContentConfig(temperature=0.3)
             response = self.genai.models.generate_content(
                 model=model_name,
                 contents=instruction,
