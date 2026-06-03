@@ -11,6 +11,19 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     postgres_url: str = "postgresql+asyncpg://postgres:postgres@postgres:5432/modal"
 
+    cloud_provider: str = "azure"
+    image_generation_provider: str = "qwen"
+    media_storage_provider: str = "azure_blob"
+
+    qwen_api_key: str | None = None
+    qwen_image_endpoint: str | None = None
+    qwen_image_model: str = "qwen-image"
+
+    azure_storage_connection_string: str | None = None
+    azure_storage_account_url: str | None = None
+    azure_media_container: str = "media"
+    azure_signed_url_ttl_seconds: int = 3600
+
     gcp_project_id: str = ""
     gcp_region: str = "us-central1"
     genai_use_vertexai: bool = True
@@ -62,6 +75,10 @@ class Settings(BaseSettings):
     @field_validator(
         "firebase_credentials_path",
         "gemini_api_key",
+        "qwen_api_key",
+        "qwen_image_endpoint",
+        "azure_storage_connection_string",
+        "azure_storage_account_url",
         "videofx_endpoint",
         "videofx_api_key",
         "videofx_fallback_endpoint",

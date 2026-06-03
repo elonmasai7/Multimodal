@@ -1,4 +1,6 @@
-# Msomi — GCP Deployment Reference
+# Msomi — Legacy GCP Deployment Reference
+
+> Current CTO direction: Azure is the target production cloud. This document is retained as a legacy Google Cloud reference only until Azure infrastructure and deployment automation are added.
 
 ## Live URLs
 

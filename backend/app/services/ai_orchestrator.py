@@ -98,6 +98,33 @@ class GenAIMultimodalEngine:
             raise AIIntegrationError("Google GenAI SDK not installed correctly")
         if not settings.gcs_media_bucket:
             raise MediaGenerationError("GCS_MEDIA_BUCKET is required")
+        if settings.cloud_provider.lower() not in {"gcp", "google_cloud", "google_cloud_platform"}:
+            logger.info(
+                "cloud_provider_legacy_fallback",
+                extra={
+                    "configured_provider": settings.cloud_provider,
+                    "active_provider": "gcp",
+                    "reason": "Azure deployment and storage adapters are not implemented yet",
+                },
+            )
+        if settings.image_generation_provider.lower() not in {"vertex", "imagen", "google_vertex"}:
+            logger.info(
+                "image_generation_provider_legacy_fallback",
+                extra={
+                    "configured_provider": settings.image_generation_provider,
+                    "active_provider": "vertex",
+                    "reason": "Qwen image adapter is not implemented yet",
+                },
+            )
+        if settings.media_storage_provider.lower() not in {"gcs", "google_cloud_storage"}:
+            logger.info(
+                "media_storage_provider_legacy_fallback",
+                extra={
+                    "configured_provider": settings.media_storage_provider,
+                    "active_provider": "gcs",
+                    "reason": "Azure Blob media adapter is not implemented yet",
+                },
+            )
         self.genai = get_genai_client()
         self.text_model = settings.vertex_model_text
         self.image_model = settings.vertex_model_image

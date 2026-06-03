@@ -16,6 +16,14 @@ Most AI apps work in turns: you ask, it answers. Msomi works like a **creative d
 2. While the text streams to the user, Veo video generation and Google TTS audio run concurrently.
 3. The result is a live, context-aware experience: text → inline image → text → inline image → narration audio → video — all in one fluid SSE stream.
 
+## Current Direction
+
+- **Image generation provider**: Qwen Image is the target provider for generated visuals.
+- **Cloud provider**: Azure is the target production cloud.
+- **Migration note**: The repository still contains legacy Google Cloud/Vertex AI/Imagen/GCS deployment and runtime hooks. Treat those as existing implementation details until an Azure + Qwen provider migration is completed, not as the desired future production direction.
+
+Target production deployment should be on Azure. Legacy GCP setup and deployment commands remain below for reference only until Azure infrastructure-as-code and deployment automation are added.
+
 For **Story mode**, the agent tracks choices across scenes, building a branching narrative grounded in prior context.
 
 ---
@@ -80,14 +88,14 @@ Veo 3.x
 | Backend | FastAPI, Python 3.12, asyncio, SSE streaming |
 | AI — Text + Images | `gemini-2.0-flash-preview-image-generation` (interleaved output) |
 | AI — Text only | `gemini-2.5-pro` (lesson plan with Google Search grounding) |
-| AI — Images | `imagen-3.0-generate-002` |
+| AI — Images | Qwen Image target; current legacy path uses `imagen-3.0-generate-002` |
 | AI — Video | `veo-3.1-generate-001` (lesson), `veo-3.0-fast-generate-001` (story) |
 | AI — Audio | Google Cloud Text-to-Speech (`en-US-Neural2-C`) |
 | Auth | Firebase Authentication + Firebase Admin SDK |
 | Database | Cloud SQL (PostgreSQL 16) + Cloud Firestore |
 | Cache | Cloud Memorystore (Redis) |
-| Storage | Google Cloud Storage (GCS) with IAM-signed URLs |
-| Infra | Google Cloud Run, Artifact Registry, Secret Manager, VPC Connector |
+| Storage | Azure Blob target; current legacy path uses Google Cloud Storage (GCS) with IAM-signed URLs |
+| Infra | Azure target; current legacy deployment uses Google Cloud Run, Artifact Registry, Secret Manager, VPC Connector |
 
 ---
 
@@ -359,6 +367,16 @@ gcloud run deploy msomi-frontend --image=$REGISTRY/frontend:latest --region=us-c
 
 | Variable | Required | Description |
 |---|---|---|
+| `CLOUD_PROVIDER` | No | Runtime cloud direction, default `azure`; current media path logs fallback to legacy GCP until Azure adapters are implemented |
+| `IMAGE_GENERATION_PROVIDER` | No | Runtime image provider direction, default `qwen`; current image path logs fallback to Vertex/Imagen until Qwen adapter is implemented |
+| `MEDIA_STORAGE_PROVIDER` | No | Runtime media storage direction, default `azure_blob`; current media path logs fallback to GCS until Azure Blob adapter is implemented |
+| `QWEN_API_KEY` | Target | Qwen image provider credential once the adapter is implemented |
+| `QWEN_IMAGE_ENDPOINT` | Target | Qwen image provider endpoint once the adapter is implemented |
+| `QWEN_IMAGE_MODEL` | Target | Qwen image model name, default `qwen-image` |
+| `AZURE_STORAGE_CONNECTION_STRING` | Target | Azure Blob credential/config once storage migration is implemented |
+| `AZURE_STORAGE_ACCOUNT_URL` | Target | Azure Storage account URL once storage migration is implemented |
+| `AZURE_MEDIA_CONTAINER` | Target | Azure Blob media container, default `media` |
+| `AZURE_SIGNED_URL_TTL_SECONDS` | Target | Azure SAS URL TTL, default `3600` |
 | `GCP_PROJECT_ID` | Yes | GCP project ID |
 | `GCP_REGION` | Yes | GCP region (e.g. `us-central1`) |
 | `GCS_MEDIA_BUCKET` | Yes | GCS bucket for media uploads |
@@ -493,3 +511,9 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 | Cold-start 503s | Cloud Run scales to 0 | Set `--min-instances=1` |
 | `inline_image_upload_failed` | Wrong GCS bucket region | Use a bucket in the same region as Cloud Run |
 | Firebase init fails | `FIREBASE_CREDENTIALS` secret not mounted | Add `--set-secrets=FIREBASE_CREDENTIALS=firebase-credentials:latest` |
+
+## Notes
+
+- SSE streaming endpoints accept Firebase bearer token in `Authorization` or query param `token` (for native `EventSource`).
+- Target direction is Qwen-generated images stored in Azure Blob Storage and returned as short-lived SAS URLs. The current legacy implementation uploads generated image/audio assets to GCS and returns signed URLs.
+- Video generation uses configured VideoFX endpoint.
